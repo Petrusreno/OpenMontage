@@ -45,18 +45,18 @@ export const KPIGrid: React.FC<KPIGridProps> = ({
   animationStyle = "count-up",
 }) => {
   const frame = useCurrentFrame();
-  const { fps, durationInFrames } = useVideoConfig();
+  const { fps, durationInFrames, width, height } = useVideoConfig();
 
   const cols = Math.min(columns, metrics.length);
   const rows = Math.ceil(metrics.length / cols);
 
-  // Grid layout constants (within 1920x1080)
+  // Grid layout constants — scaled to the actual canvas, not hardcoded to 1920x1080
   const gridPadding = 100;
   const cardGap = 28;
   const titleHeight = title ? 120 : 0;
   const gridTop = 80 + titleHeight;
-  const gridWidth = 1920 - gridPadding * 2;
-  const gridHeight = 1080 - gridTop - 80;
+  const gridWidth = width - gridPadding * 2;
+  const gridHeight = height - gridTop - 80;
   const cardWidth = (gridWidth - cardGap * (cols - 1)) / cols;
   const cardHeight = Math.min(
     (gridHeight - cardGap * (rows - 1)) / rows,
