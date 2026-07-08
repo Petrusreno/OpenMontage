@@ -111,5 +111,39 @@ class TextBasedEditor(BaseTool):
             i = j + 1
         return spans
 
+    def _match_literal_words(self, words: list[dict], remove_words: list[str]) -> list[dict]:
+        targets = {self._normalize(w) for w in (remove_words or []) if self._normalize(w)}
+        spans = []
+        for w in words:
+            if self._valid_time(w) and self._normalize(w["word"]) in targets:
+                spans.append({"start": float(w["start"]), "end": float(w["end"]),
+                              "word": w["word"].strip(), "reason": "literal"})
+        return spans
+
+    def _indices_and_ranges_to_spans(self, words: list[dict], indices: list[int] | None,
+                                     ranges: list[dict] | None) -> list[dict]:
+        spans = []
+        for i in (indices or []):
+            if isinstance(i, int) and 0 <= i < len(words) and self._valid_time(words[i]):
+                w = words[i]
+                spans.append({"start": float(w["start"]), "end": float(w["end"]),
+                              "word": w["word"].strip(), "reason": "index"})
+        for r in (ranges or []):
+            s, e = r.get("start_seconds"), r.get("end_seconds")
+            if isinstance(s, (int, float)) and isinstance(e, (int, float)) and e > s:
+                spans.append({"start": float(s), "end": float(e), "word": None, "reason": "range"})
+        return spans
+
+    def _merge_spans(self, spans: list[dict]) -> list[dict]:
+        ordered = sorted(spans, key=lambda s: (float(s["start"]), float(s["end"])))
+        merged: list[dict] = []
+        for s in ordered:
+            start, end = float(s["start"]), float(s["end"])
+            if merged and start <= merged[-1]["end"]:
+                merged[-1]["end"] = max(merged[-1]["end"], end)
+            else:
+                merged.append({"start": start, "end": end})
+        return merged
+
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         return ToolResult(success=False, error="not implemented")
