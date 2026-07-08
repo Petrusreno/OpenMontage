@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unicodedata
 
 from schemas.artifacts import validate_artifact
@@ -121,3 +122,87 @@ def test_to_edit_decisions_validates_against_schema():
     assert ed["version"] == "1.0"
     assert [c["in_seconds"] for c in ed["cuts"]] == [0.0, 2.0]
     assert all(c["source"] == "clip.mp4" for c in ed["cuts"])
+
+
+def test_keep_segments_short_removal_still_cuts():
+    tool = TextBasedEditor()
+    merged = [{"start": 0.5, "end": 0.52}]            # 0.02s removal
+    # A global padding of 0.08 (> half the removal) would previously cancel the
+    # removal into one full-length span; the per-removal padding clamp keeps a
+    # real cut → two keep segments, not one span covering the whole clip.
+    keeps = tool._keep_segments(merged, duration=1.0, padding=0.08, min_gap=0.0)
+    assert len(keeps) == 2
+    assert keeps[0]["start"] == 0.0
+    assert keeps[-1]["end"] == 1.0
+
+
+def test_execute_emits_edit_decisions_from_word_timestamps(tmp_path):
+    tool = TextBasedEditor()
+    words = [_w("hum", 0.0, 0.4), _w("olá", 0.4, 0.8), _w("mundo", 0.8, 1.2)]
+    out = tmp_path / "ed.json"
+    result = tool.execute({
+        "word_timestamps": words, "source": "clip.mp4", "language": "pt",
+        "output_path": str(out),
+    })
+    assert result.success, result.error
+    assert out.exists()
+    ed = json.loads(out.read_text())
+    validate_artifact("edit_decisions", ed)
+    # "hum" (0.0-0.4) removed → first kept cut starts at/after 0.4
+    assert ed["cuts"][0]["in_seconds"] >= 0.4 - 1e-9
+    assert result.data["removed_count"] == 1
+    assert result.data["removed"][0]["reason"] == "filler"
+
+
+def test_execute_identity_when_nothing_removed(tmp_path):
+    tool = TextBasedEditor()
+    words = [_w("olá", 0.0, 0.5), _w("mundo", 0.5, 1.0)]
+    out = tmp_path / "ed.json"
+    result = tool.execute({"word_timestamps": words, "source": "c.mp4",
+                           "remove_fillers": False, "output_path": str(out)})
+    assert result.success
+    ed = json.loads(out.read_text())
+    assert len(ed["cuts"]) == 1
+    assert ed["cuts"][0]["in_seconds"] == 0.0
+    assert result.data["removed_count"] == 0
+
+
+def test_execute_fails_when_everything_removed(tmp_path):
+    tool = TextBasedEditor()
+    words = [_w("hum", 0.0, 1.0)]
+    out = tmp_path / "ed.json"
+    result = tool.execute({"word_timestamps": words, "source": "c.mp4",
+                           "output_path": str(out)})
+    assert not result.success
+    assert not out.exists()
+
+
+def test_execute_requires_input_or_words():
+    tool = TextBasedEditor()
+    result = tool.execute({})
+    assert not result.success and "input_path" in (result.error or "")
+
+
+def test_execute_is_deterministic(tmp_path):
+    tool = TextBasedEditor()
+    words = [_w("hum", 0.0, 0.4), _w("olá", 0.4, 0.8), _w("olá", 0.85, 1.2), _w("fim", 1.3, 1.6)]
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    tool.execute({"word_timestamps": words, "source": "c.mp4", "output_path": str(a)})
+    tool.execute({"word_timestamps": words, "source": "c.mp4", "output_path": str(b)})
+    assert a.read_text() == b.read_text()
+
+
+def test_execute_removed_seconds_uses_merged_not_raw(tmp_path):
+    tool = TextBasedEditor()
+    words = [_w("hum", 0.0, 0.4), _w("olá", 0.4, 0.8), _w("mundo", 0.8, 1.2)]
+    out = tmp_path / "ed.json"
+    # "hum" flagged by BOTH filler and literal removal → 2 raw spans, same 0.0-0.4.
+    result = tool.execute({
+        "word_timestamps": words, "source": "c.mp4",
+        "remove_words": ["hum"], "output_path": str(out),
+    })
+    assert result.success, result.error
+    assert result.data["removed_count"] == 2                 # raw report keeps both reasons
+    assert abs(result.data["removed_seconds"] - 0.4) < 1e-6  # merged, not 0.8
+    ed = json.loads(out.read_text())
+    assert abs(ed["metadata"]["removed_seconds"] - 0.4) < 1e-6
