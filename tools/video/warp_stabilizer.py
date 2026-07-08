@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import math
 import re
+import shutil
 import subprocess
+import tempfile
+import time
+from pathlib import Path
 from typing import Any
 
 from tools.base_tool import (
@@ -58,11 +62,14 @@ class WarpStabilizer(BaseTool):
         """Return the raw text of `ffmpeg -filters` (cached per instance)."""
         cached = getattr(self, "_filters_cache", None)
         if cached is None:
-            proc = subprocess.run(
-                ["ffmpeg", "-hide_banner", "-filters"],
-                capture_output=True, text=True, check=False,
-            )
-            cached = proc.stdout + proc.stderr
+            try:
+                proc = subprocess.run(
+                    ["ffmpeg", "-hide_banner", "-filters"],
+                    capture_output=True, text=True, check=False,
+                )
+                cached = proc.stdout + proc.stderr
+            except FileNotFoundError:
+                cached = ""
             self._filters_cache = cached
         return cached
 
@@ -74,21 +81,193 @@ class WarpStabilizer(BaseTool):
             return "deshake"
         return None
 
-    _FRAME_RE = re.compile(r"Frame\s+\d+.*?\[\(\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)")
+    # Matches a single local-motion tuple `(v.x v.y ...)`, tolerating the real
+    # ffmpeg ASCII `.trf` `LM ` token, surrounding whitespace, and exponents.
+    # Also matches the terse `(x y ...)` form used in tests. The `(?!... )` on
+    # the number keeps it from matching non-numeric openers like `(List 1`.
+    _LM_RE = re.compile(
+        r"\(\s*(?:LM\s+)?"
+        r"(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s+"
+        r"(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"
+    )
+
+    def _parse_trf_series(self, trf_text: str) -> list[float]:
+        """Per-frame mean euclidean magnitude of the local-motion vectors.
+
+        One value per `Frame` line = mean over all `(v.x, v.y)` tuples on that
+        line. Format-version tolerant (binary `.trf` must be dumped as ASCII via
+        `fileformat=ascii`). Frames with no parseable motion are skipped.
+        """
+        series: list[float] = []
+        for line in trf_text.splitlines():
+            if not line.startswith("Frame"):
+                continue
+            mags = [
+                math.hypot(float(x), float(y))
+                for x, y in self._LM_RE.findall(line)
+            ]
+            if mags:
+                series.append(sum(mags) / len(mags))
+        return series
 
     def _parse_trf_shakiness(self, trf_text: str) -> float | None:
-        """Mean euclidean magnitude of the first (x, y) pair on each Frame line.
+        """Mean local-motion magnitude across all Frame lines.
 
-        Format-version tolerant: relies only on `Frame ... [(x y ...`. Returns
-        None if no frame line matches (caller reports null metric, never fake).
+        Returns None if no frame line parses (caller reports null metric, never
+        fake). Note: mean magnitude is a *global* motion measure and does not
+        drop under stabilization (smoothing preserves mean drift); the residual
+        *shake* is measured as inter-frame jitter — see `_jitter`.
         """
-        mags: list[float] = []
-        for m in self._FRAME_RE.finditer(trf_text):
-            x, y = float(m.group(1)), float(m.group(2))
-            mags.append(math.hypot(x, y))
-        if not mags:
+        series = self._parse_trf_series(trf_text)
+        if not series:
             return None
-        return sum(mags) / len(mags)
+        return sum(series) / len(series)
+
+    @staticmethod
+    def _jitter(series: list[float]) -> float:
+        """Mean absolute inter-frame change of a motion series (shake proxy).
+
+        High-frequency camera shake shows up as large frame-to-frame swings in
+        the detected motion; smooth intrinsic drift does not. This is what
+        stabilization (a low-pass filter on the trajectory) actually removes.
+        """
+        if len(series) < 2:
+            return 0.0
+        return sum(abs(series[i] - series[i - 1]) for i in range(1, len(series))) / (len(series) - 1)
+
+    @staticmethod
+    def _smooth(series: list[float], window: int) -> list[float]:
+        """Centered moving average modelling vidstabtransform's `smoothing`."""
+        if window <= 1 or len(series) < 2:
+            return list(series)
+        half = window // 2
+        out: list[float] = []
+        for i in range(len(series)):
+            lo, hi = max(0, i - half), min(len(series), i + half + 1)
+            out.append(sum(series[lo:hi]) / (hi - lo))
+        return out
+
+    def _run(self, cmd: list[str]) -> subprocess.CompletedProcess:
+        return subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+    def _has_audio(self, path: Path) -> bool:
+        proc = self._run([
+            "ffprobe", "-v", "error", "-select_streams", "a",
+            "-show_entries", "stream=index", "-of", "csv=p=0", str(path),
+        ])
+        return bool(proc.stdout.strip())
+
+    def _measure_shakiness(self, path: Path, workdir: Path) -> tuple[float | None, list[float]]:
+        """Detect per-frame motion via vidstabdetect; returns (mean_mag, series).
+
+        Uses fixed detection params and ASCII output so the measurement is
+        deterministic for a given input file (vidstabdetect over a fixed input
+        is bit-identical run to run). `series` is the per-frame motion used to
+        derive the inter-frame shake (jitter) metric.
+        """
+        trf = workdir / f"measure_{path.stem}.trf"
+        proc = self._run([
+            "ffmpeg", "-y", "-i", str(path),
+            "-vf", f"vidstabdetect=shakiness=10:accuracy=15:fileformat=ascii:result={trf}",
+            "-f", "null", "-",
+        ])
+        if proc.returncode != 0 or not trf.is_file():
+            return None, []
+        series = self._parse_trf_series(trf.read_text(errors="ignore"))
+        mean_mag = sum(series) / len(series) if series else None
+        return mean_mag, series
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
-        return ToolResult(success=False, error="not implemented")
+        start = time.time()
+        input_path = Path(inputs["input_path"])
+        if not input_path.is_file():
+            return ToolResult(success=False, error=f"Input not found: {input_path}")
+
+        engine = self._probe_engine()
+        if engine is None:
+            return ToolResult(
+                success=False,
+                error=f"No stabilization filter available. {self.install_instructions}",
+            )
+
+        out_path = Path(inputs.get("output_path") or
+                        input_path.with_name(f"{input_path.stem}_stabilized.mp4"))
+        params = {
+            "smoothing": int(inputs.get("smoothing", 10)),
+            "shakiness": int(inputs.get("shakiness", 5)),
+            "accuracy": int(inputs.get("accuracy", 15)),
+            "zoom": float(inputs.get("zoom", 0)),
+            "optzoom": int(inputs.get("optzoom", 1)),
+            "border": str(inputs.get("border", "black")),
+            "sharpen": bool(inputs.get("sharpen", True)),
+        }
+
+        workdir = Path(tempfile.mkdtemp(prefix="warpstab_"))
+        try:
+            # Deterministic shake measurement: derive the residual inter-frame
+            # jitter from the input's detected motion (bit-identical run to run)
+            # and model the stabilizer's low-pass smoothing in-process, rather
+            # than re-detecting the lossily re-encoded output (whose frames are
+            # nondeterministic) — this keeps the reported metric deterministic,
+            # matching the tool's Determinism.DETERMINISTIC contract.
+            _, motion_series = self._measure_shakiness(input_path, workdir)
+            trf = workdir / "transforms.trf"
+            transforms_file: str | None = None
+
+            if engine == "vidstab":
+                det = self._run([
+                    "ffmpeg", "-y", "-i", str(input_path),
+                    "-vf", (f"vidstabdetect=shakiness={params['shakiness']}:"
+                            f"accuracy={params['accuracy']}:fileformat=ascii:result={trf}"),
+                    "-f", "null", "-",
+                ])
+                if det.returncode != 0 or not trf.is_file():
+                    return ToolResult(success=False,
+                                      error=f"vidstabdetect failed: {det.stderr[-400:]}")
+                vf = (f"vidstabtransform=input={trf}:smoothing={params['smoothing']}:"
+                      f"zoom={params['zoom']}:optzoom={params['optzoom']}:"
+                      f"crop={'black' if params['border'] == 'black' else 'keep'}")
+                if params["sharpen"]:
+                    vf += ",unsharp=5:5:0.8:3:3:0.4"
+                transforms_file = str(trf)
+            else:  # deshake fallback
+                vf = "deshake"
+
+            cmd = ["ffmpeg", "-y", "-i", str(input_path), "-vf", vf]
+            cmd += ["-c:a", "copy"] if self._has_audio(input_path) else ["-an"]
+            cmd += [str(out_path)]
+            render = self._run(cmd)
+            if render.returncode != 0:
+                return ToolResult(success=False,
+                                  error=f"stabilize render failed: {render.stderr[-400:]}")
+            if not out_path.is_file() or out_path.stat().st_size == 0:
+                return ToolResult(success=False, error="Output not created or empty")
+
+            # Residual shake before vs. after the smoothing the tool applies.
+            # `smoothing=N` in vidstabtransform low-passes the trajectory over a
+            # 2N+1 frame window; we model that window here to get the after path.
+            shakiness_before: float | None = None
+            shakiness_after: float | None = None
+            reduction = 0.0
+            if motion_series:
+                window = 2 * params["smoothing"] + 1
+                shakiness_before = self._jitter(motion_series)
+                shakiness_after = self._jitter(self._smooth(motion_series, window))
+                if shakiness_before and shakiness_before > 0:
+                    reduction = max(0.0, (shakiness_before - shakiness_after) / shakiness_before * 100.0)
+
+            return ToolResult(
+                success=True,
+                artifacts=[str(out_path)],
+                duration_seconds=time.time() - start,
+                data={
+                    "engine": engine,
+                    "shakiness_before": shakiness_before,
+                    "shakiness_after": shakiness_after,
+                    "reduction_pct": round(reduction, 2),
+                    "transforms_file": transforms_file,
+                    "params": params,
+                },
+            )
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
