@@ -98,6 +98,54 @@ def test_execute_reduces_shakiness(tmp_path):
     assert result.data["reduction_pct"] >= 20.0
 
 
+def _make_silent_video_only_clip(path: Path) -> None:
+    _sp.run([
+        "ffmpeg", "-y", "-f", "lavfi",
+        "-i", "testsrc2=size=320x240:rate=30:duration=1",
+        "-an", "-pix_fmt", "yuv420p", str(path),
+    ], check=True, capture_output=True)
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+@pytest.mark.skipif(not _ffmpeg_has_vidstab(), reason="libvidstab required")
+def test_execute_handles_video_only_input(tmp_path):
+    src = tmp_path / "noaudio.mp4"
+    _make_silent_video_only_clip(src)
+    out = tmp_path / "out.mp4"
+    result = WarpStabilizer().execute({"input_path": str(src), "output_path": str(out)})
+    assert result.success, result.error
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_execute_uses_deshake_when_vidstab_absent(tmp_path, monkeypatch):
+    src = tmp_path / "shaky.mp4"
+    _make_shaky_clip(src)
+    out = tmp_path / "out.mp4"
+    tool = WarpStabilizer()
+    monkeypatch.setattr(tool, "_probe_engine", lambda: "deshake")
+    result = tool.execute({"input_path": str(src), "output_path": str(out)})
+    assert result.success, result.error
+    assert result.data["engine"] == "deshake"
+    assert result.data["transforms_file"] is None
+    assert out.exists() and out.stat().st_size > 0
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+@pytest.mark.skipif(not _ffmpeg_has_vidstab(), reason="libvidstab required")
+def test_execute_clamps_smoothing_on_short_clip(tmp_path):
+    src = tmp_path / "short.mp4"
+    _sp.run([
+        "ffmpeg", "-y", "-f", "lavfi",
+        "-i", "testsrc2=size=320x240:rate=30:duration=0.2",  # ~6 frames
+        "-pix_fmt", "yuv420p", str(src),
+    ], check=True, capture_output=True)
+    out = tmp_path / "out.mp4"
+    result = WarpStabilizer().execute(
+        {"input_path": str(src), "output_path": str(out), "smoothing": 30})
+    assert result.success, result.error
+    assert result.data["params"]["smoothing"] <= 3  # clamped from 30
+
+
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
 @pytest.mark.skipif(not _ffmpeg_has_vidstab(), reason="libvidstab required")
 def test_detection_pass_is_deterministic(tmp_path):

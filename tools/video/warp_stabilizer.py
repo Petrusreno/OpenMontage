@@ -145,6 +145,17 @@ class WarpStabilizer(BaseTool):
         ])
         return bool(proc.stdout.strip())
 
+    def _frame_count(self, path: Path) -> int:
+        proc = self._run([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-count_frames", "-show_entries", "stream=nb_read_frames",
+            "-of", "csv=p=0", str(path),
+        ])
+        try:
+            return int(proc.stdout.strip())
+        except (ValueError, AttributeError):
+            return 0
+
     def _measure_shakiness(self, path: Path, workdir: Path) -> tuple[float | None, list[float]]:
         """Detect per-frame motion via vidstabdetect; returns (mean_mag, series).
 
@@ -189,6 +200,10 @@ class WarpStabilizer(BaseTool):
             "border": str(inputs.get("border", "black")),
             "sharpen": bool(inputs.get("sharpen", True)),
         }
+
+        frames = self._frame_count(input_path)
+        if frames and params["smoothing"] and frames < 2 * params["smoothing"]:
+            params["smoothing"] = max(0, frames // 2)
 
         workdir = Path(tempfile.mkdtemp(prefix="warpstab_"))
         try:
