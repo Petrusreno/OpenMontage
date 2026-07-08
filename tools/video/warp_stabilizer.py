@@ -139,18 +139,41 @@ class WarpStabilizer(BaseTool):
         return subprocess.run(cmd, capture_output=True, text=True, check=False)
 
     def _has_audio(self, path: Path) -> bool:
-        proc = self._run([
-            "ffprobe", "-v", "error", "-select_streams", "a",
-            "-show_entries", "stream=index", "-of", "csv=p=0", str(path),
-        ])
+        try:
+            proc = self._run([
+                "ffprobe", "-v", "error", "-select_streams", "a",
+                "-show_entries", "stream=index", "-of", "csv=p=0", str(path),
+            ])
+        except (FileNotFoundError, OSError):
+            return False
         return bool(proc.stdout.strip())
 
     def _frame_count(self, path: Path) -> int:
-        proc = self._run([
-            "ffprobe", "-v", "error", "-select_streams", "v:0",
-            "-count_frames", "-show_entries", "stream=nb_read_frames",
-            "-of", "csv=p=0", str(path),
-        ])
+        # Cheap-first: container metadata (no decode) before falling back to
+        # the expensive -count_frames accurate path (forces a full decode).
+        try:
+            proc = self._run([
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=nb_frames",
+                "-of", "csv=p=0", str(path),
+            ])
+        except (FileNotFoundError, OSError):
+            return 0
+        try:
+            count = int(proc.stdout.strip())
+            if count > 0:
+                return count
+        except (ValueError, AttributeError):
+            pass
+
+        try:
+            proc = self._run([
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-count_frames", "-show_entries", "stream=nb_read_frames",
+                "-of", "csv=p=0", str(path),
+            ])
+        except (FileNotFoundError, OSError):
+            return 0
         try:
             return int(proc.stdout.strip())
         except (ValueError, AttributeError):
@@ -201,9 +224,10 @@ class WarpStabilizer(BaseTool):
             "sharpen": bool(inputs.get("sharpen", True)),
         }
 
-        frames = self._frame_count(input_path)
-        if frames and params["smoothing"] and frames < 2 * params["smoothing"]:
-            params["smoothing"] = max(0, frames // 2)
+        if params["smoothing"]:
+            frames = self._frame_count(input_path)
+            if frames and frames < 2 * params["smoothing"]:
+                params["smoothing"] = max(0, frames // 2)
 
         workdir = Path(tempfile.mkdtemp(prefix="warpstab_"))
         try:
