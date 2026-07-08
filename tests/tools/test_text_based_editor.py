@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import unicodedata
+
 from tools.video.text_based_editor import TextBasedEditor
 from tools.base_tool import ToolTier
 
@@ -50,3 +52,22 @@ def test_detect_repetitions_respects_gap():
     tool = TextBasedEditor()
     words = [_w("sim", 0.0, 0.2), _w("sim", 2.0, 2.2)]   # 1.8s apart > max_gap
     assert tool._detect_repetitions(words, 0.6) == []
+
+
+def test_detect_repetitions_run_of_three():
+    tool = TextBasedEditor()
+    words = [_w("o", 0.0, 0.2), _w("o", 0.25, 0.45), _w("o", 0.5, 0.7)]
+    spans = tool._detect_repetitions(words, 0.6)
+    assert len(spans) == 2
+    starts = sorted(round(s["start"], 2) for s in spans)
+    assert starts == [0.0, 0.25]
+    assert 0.5 not in starts
+
+
+def test_normalize_matches_nfd_filler():
+    tool = TextBasedEditor()
+    nfd_word = unicodedata.normalize("NFD", "ãã")
+    words = [_w(nfd_word, 0.0, 0.3)]
+    lex = tool._lexicon_for("pt", None)
+    spans = tool._detect_fillers(words, lex)
+    assert len(spans) == 1

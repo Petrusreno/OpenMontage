@@ -10,6 +10,7 @@ are never removed unless the caller asks explicitly.
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any
 
 from tools.base_tool import (
@@ -71,7 +72,8 @@ class TextBasedEditor(BaseTool):
 
     @staticmethod
     def _normalize(word: str) -> str:
-        return re.sub(r"[^\w]", "", (word or ""), flags=re.UNICODE).lower()
+        text = unicodedata.normalize("NFC", word or "")
+        return re.sub(r"[^\w]", "", text, flags=re.UNICODE).lower()
 
     def _lexicon_for(self, language: str, filler_lexicon: list[str] | None) -> set[str]:
         base = set(self._DEFAULT_LEXICONS.get(language, self._DEFAULT_LEXICONS["pt"]))
@@ -86,9 +88,9 @@ class TextBasedEditor(BaseTool):
     def _detect_fillers(self, words: list[dict], lexicon: set[str]) -> list[dict]:
         spans = []
         for w in words:
-            if self._valid_time(w) and self._normalize(w["word"]) in lexicon:
+            if self._valid_time(w) and self._normalize(w.get("word", "")) in lexicon:
                 spans.append({"start": float(w["start"]), "end": float(w["end"]),
-                              "word": w["word"].strip(), "reason": "filler"})
+                              "word": w.get("word", "").strip(), "reason": "filler"})
         return spans
 
     def _detect_repetitions(self, words: list[dict], max_gap: float) -> list[dict]:
@@ -98,14 +100,14 @@ class TextBasedEditor(BaseTool):
         while i < len(valid):
             j = i
             while (j + 1 < len(valid)
-                   and self._normalize(valid[j + 1]["word"]) == self._normalize(valid[i]["word"])
-                   and self._normalize(valid[i]["word"]) != ""
+                   and self._normalize(valid[j + 1].get("word", "")) == self._normalize(valid[i].get("word", ""))
+                   and self._normalize(valid[i].get("word", "")) != ""
                    and float(valid[j + 1]["start"]) - float(valid[j]["end"]) <= max_gap):
                 j += 1
             if j > i:  # run of length >= 2: remove all but the last (index j)
                 for k in range(i, j):
                     spans.append({"start": float(valid[k]["start"]), "end": float(valid[k]["end"]),
-                                  "word": valid[k]["word"].strip(), "reason": "repetition"})
+                                  "word": valid[k].get("word", "").strip(), "reason": "repetition"})
             i = j + 1
         return spans
 
