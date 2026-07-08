@@ -9,6 +9,7 @@ are never removed unless the caller asks explicitly.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from tools.base_tool import (
@@ -62,6 +63,51 @@ class TextBasedEditor(BaseTool):
             "render_path": {"type": "string"},
         },
     }
+
+    _DEFAULT_LEXICONS = {
+        "pt": {"ãã", "ã", "ahn", "ãhn", "hum", "hmm", "eh", "ehh"},
+        "en": {"um", "uh", "uhm", "hmm", "er", "err", "ah", "mm", "mhm"},
+    }
+
+    @staticmethod
+    def _normalize(word: str) -> str:
+        return re.sub(r"[^\w]", "", (word or ""), flags=re.UNICODE).lower()
+
+    def _lexicon_for(self, language: str, filler_lexicon: list[str] | None) -> set[str]:
+        base = set(self._DEFAULT_LEXICONS.get(language, self._DEFAULT_LEXICONS["pt"]))
+        if filler_lexicon:
+            base |= {self._normalize(w) for w in filler_lexicon}
+        return {self._normalize(w) for w in base if self._normalize(w)}
+
+    @staticmethod
+    def _valid_time(w: dict) -> bool:
+        return isinstance(w.get("start"), (int, float)) and isinstance(w.get("end"), (int, float))
+
+    def _detect_fillers(self, words: list[dict], lexicon: set[str]) -> list[dict]:
+        spans = []
+        for w in words:
+            if self._valid_time(w) and self._normalize(w["word"]) in lexicon:
+                spans.append({"start": float(w["start"]), "end": float(w["end"]),
+                              "word": w["word"].strip(), "reason": "filler"})
+        return spans
+
+    def _detect_repetitions(self, words: list[dict], max_gap: float) -> list[dict]:
+        spans = []
+        valid = [w for w in words if self._valid_time(w)]
+        i = 0
+        while i < len(valid):
+            j = i
+            while (j + 1 < len(valid)
+                   and self._normalize(valid[j + 1]["word"]) == self._normalize(valid[i]["word"])
+                   and self._normalize(valid[i]["word"]) != ""
+                   and float(valid[j + 1]["start"]) - float(valid[j]["end"]) <= max_gap):
+                j += 1
+            if j > i:  # run of length >= 2: remove all but the last (index j)
+                for k in range(i, j):
+                    spans.append({"start": float(valid[k]["start"]), "end": float(valid[k]["end"]),
+                                  "word": valid[k]["word"].strip(), "reason": "repetition"})
+            i = j + 1
+        return spans
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         return ToolResult(success=False, error="not implemented")
