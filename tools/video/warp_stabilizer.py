@@ -135,18 +135,6 @@ class WarpStabilizer(BaseTool):
             return 0.0
         return sum(abs(series[i] - series[i - 1]) for i in range(1, len(series))) / (len(series) - 1)
 
-    @staticmethod
-    def _smooth(series: list[float], window: int) -> list[float]:
-        """Centered moving average modelling vidstabtransform's `smoothing`."""
-        if window <= 1 or len(series) < 2:
-            return list(series)
-        half = window // 2
-        out: list[float] = []
-        for i in range(len(series)):
-            lo, hi = max(0, i - half), min(len(series), i + half + 1)
-            out.append(sum(series[lo:hi]) / (hi - lo))
-        return out
-
     def _run(self, cmd: list[str]) -> subprocess.CompletedProcess:
         return subprocess.run(cmd, capture_output=True, text=True, check=False)
 
@@ -204,12 +192,13 @@ class WarpStabilizer(BaseTool):
 
         workdir = Path(tempfile.mkdtemp(prefix="warpstab_"))
         try:
-            # Deterministic shake measurement: derive the residual inter-frame
-            # jitter from the input's detected motion (bit-identical run to run)
-            # and model the stabilizer's low-pass smoothing in-process, rather
-            # than re-detecting the lossily re-encoded output (whose frames are
-            # nondeterministic) — this keeps the reported metric deterministic,
-            # matching the tool's Determinism.DETERMINISTIC contract.
+            # `shakiness_before` = inter-frame jitter of the input's detected
+            # per-frame motion. Detection over a fixed input is bit-identical run
+            # to run (the tool's DETERMINISTIC contract refers to this: same
+            # input+params => same pass-1 `.trf`). `shakiness_after` is measured
+            # below by re-detecting the produced output — an honest measurement of
+            # the stabilized file, with mild run-to-run variance from the x264
+            # re-encode, which is expected and acceptable.
             _, motion_series = self._measure_shakiness(input_path, workdir)
             trf = workdir / "transforms.trf"
             transforms_file: str | None = None
@@ -243,17 +232,19 @@ class WarpStabilizer(BaseTool):
             if not out_path.is_file() or out_path.stat().st_size == 0:
                 return ToolResult(success=False, error="Output not created or empty")
 
-            # Residual shake before vs. after the smoothing the tool applies.
-            # `smoothing=N` in vidstabtransform low-passes the trajectory over a
-            # 2N+1 frame window; we model that window here to get the after path.
+            # Residual shake before (input) vs. after (real re-detection of the
+            # produced output). Both are inter-frame jitter of the detected
+            # per-frame motion, measured the same way. `after` is an honest
+            # measurement of the stabilized file, not a model of the input.
             shakiness_before: float | None = None
             shakiness_after: float | None = None
             reduction = 0.0
             if motion_series:
-                window = 2 * params["smoothing"] + 1
                 shakiness_before = self._jitter(motion_series)
-                shakiness_after = self._jitter(self._smooth(motion_series, window))
-                if shakiness_before and shakiness_before > 0:
+                _, out_series = self._measure_shakiness(out_path, workdir)
+                if out_series:
+                    shakiness_after = self._jitter(out_series)
+                if shakiness_before and shakiness_before > 0 and shakiness_after is not None:
                     reduction = max(0.0, (shakiness_before - shakiness_after) / shakiness_before * 100.0)
 
             return ToolResult(
