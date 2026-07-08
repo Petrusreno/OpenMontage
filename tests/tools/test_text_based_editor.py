@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unicodedata
 
+from schemas.artifacts import validate_artifact
+
 from tools.video.text_based_editor import TextBasedEditor
 from tools.base_tool import ToolTier
 
@@ -96,3 +98,26 @@ def test_merge_spans_combines_overlaps():
     spans = [{"start": 0.0, "end": 0.3}, {"start": 0.25, "end": 0.5}, {"start": 1.0, "end": 1.2}]
     merged = tool._merge_spans(spans)
     assert merged == [{"start": 0.0, "end": 0.5}, {"start": 1.0, "end": 1.2}]
+
+
+def test_keep_segments_is_complement_with_padding():
+    tool = TextBasedEditor()
+    merged = [{"start": 1.0, "end": 2.0}]           # remove 1..2 of a 3s clip
+    keeps = tool._keep_segments(merged, duration=3.0, padding=0.0, min_gap=0.05)
+    assert keeps == [{"start": 0.0, "end": 1.0}, {"start": 2.0, "end": 3.0}]
+
+
+def test_keep_segments_identity_when_no_removals():
+    tool = TextBasedEditor()
+    keeps = tool._keep_segments([], duration=5.0, padding=0.0, min_gap=0.05)
+    assert keeps == [{"start": 0.0, "end": 5.0}]
+
+
+def test_to_edit_decisions_validates_against_schema():
+    tool = TextBasedEditor()
+    keeps = [{"start": 0.0, "end": 1.0}, {"start": 2.0, "end": 3.0}]
+    ed = tool._to_edit_decisions(keeps, source="clip.mp4", removed=[], meta={"modes": ["filler"]})
+    validate_artifact("edit_decisions", ed)          # raises on failure
+    assert ed["version"] == "1.0"
+    assert [c["in_seconds"] for c in ed["cuts"]] == [0.0, 2.0]
+    assert all(c["source"] == "clip.mp4" for c in ed["cuts"])

@@ -145,5 +145,48 @@ class TextBasedEditor(BaseTool):
                 merged.append({"start": start, "end": end})
         return merged
 
+    def _keep_segments(self, merged: list[dict], duration: float,
+                       padding: float, min_gap: float) -> list[dict]:
+        segments = []
+        cursor = 0.0
+        for rem in merged:
+            keep_end = float(rem["start"]) + padding
+            if keep_end > cursor:
+                segments.append({"start": cursor, "end": min(keep_end, duration)})
+            cursor = max(cursor, float(rem["end"]) - padding)
+        if cursor < duration:
+            segments.append({"start": cursor, "end": duration})
+
+        merged_keeps: list[dict] = []
+        for seg in segments:
+            if seg["end"] - seg["start"] < 0.01:
+                continue
+            if merged_keeps and seg["start"] - merged_keeps[-1]["end"] < min_gap:
+                merged_keeps[-1]["end"] = seg["end"]
+            else:
+                merged_keeps.append({"start": round(seg["start"], 3), "end": round(seg["end"], 3)})
+        return merged_keeps
+
+    def _to_edit_decisions(self, keeps: list[dict], source: str,
+                           removed: list[dict], meta: dict) -> dict:
+        cuts = [
+            {"id": f"cut_{i:04d}", "source": source,
+             "in_seconds": round(float(k["start"]), 3), "out_seconds": round(float(k["end"]), 3)}
+            for i, k in enumerate(keeps)
+        ]
+        removed_seconds = round(sum(float(r["end"]) - float(r["start"]) for r in removed), 3)
+        kept_seconds = round(sum(c["out_seconds"] - c["in_seconds"] for c in cuts), 3)
+        return {
+            "version": "1.0",
+            "cuts": cuts,
+            "metadata": {
+                "tool": "text_based_editor",
+                "removed_count": len(removed),
+                "removed_seconds": removed_seconds,
+                "kept_seconds": kept_seconds,
+                **meta,
+            },
+        }
+
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         return ToolResult(success=False, error="not implemented")
