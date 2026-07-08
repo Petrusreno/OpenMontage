@@ -7,6 +7,8 @@ Reports a before/after shakiness metric measured the same way both times.
 
 from __future__ import annotations
 
+import math
+import re
 import subprocess
 from typing import Any
 
@@ -71,6 +73,22 @@ class WarpStabilizer(BaseTool):
         if "deshake" in filters:
             return "deshake"
         return None
+
+    _FRAME_RE = re.compile(r"Frame\s+\d+.*?\[\(\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)")
+
+    def _parse_trf_shakiness(self, trf_text: str) -> float | None:
+        """Mean euclidean magnitude of the first (x, y) pair on each Frame line.
+
+        Format-version tolerant: relies only on `Frame ... [(x y ...`. Returns
+        None if no frame line matches (caller reports null metric, never fake).
+        """
+        mags: list[float] = []
+        for m in self._FRAME_RE.finditer(trf_text):
+            x, y = float(m.group(1)), float(m.group(2))
+            mags.append(math.hypot(x, y))
+        if not mags:
+            return None
+        return sum(mags) / len(mags)
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         return ToolResult(success=False, error="not implemented")
