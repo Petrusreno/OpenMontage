@@ -7,6 +7,7 @@ Reports a before/after shakiness metric measured the same way both times.
 
 from __future__ import annotations
 
+import subprocess
 from typing import Any
 
 from tools.base_tool import (
@@ -50,6 +51,26 @@ class WarpStabilizer(BaseTool):
             "sharpen": {"type": "boolean", "default": True},
         },
     }
+
+    def _ffmpeg_filters(self) -> str:
+        """Return the raw text of `ffmpeg -filters` (cached per instance)."""
+        cached = getattr(self, "_filters_cache", None)
+        if cached is None:
+            proc = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-filters"],
+                capture_output=True, text=True, check=False,
+            )
+            cached = proc.stdout + proc.stderr
+            self._filters_cache = cached
+        return cached
+
+    def _probe_engine(self) -> str | None:
+        filters = self._ffmpeg_filters()
+        if "vidstabdetect" in filters and "vidstabtransform" in filters:
+            return "vidstab"
+        if "deshake" in filters:
+            return "deshake"
+        return None
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         return ToolResult(success=False, error="not implemented")
