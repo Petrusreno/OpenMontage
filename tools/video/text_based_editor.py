@@ -214,11 +214,11 @@ class TextBasedEditor(BaseTool):
 
     def _duration(self, input_path: Path | None, words: list[dict]) -> float:
         if input_path and input_path.is_file():
-            proc = self.run_command([
-                "ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-                "-of", "json", str(input_path),
-            ])
             try:
+                proc = self.run_command([
+                    "ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                    "-of", "json", str(input_path),
+                ])
                 return float(json.loads(proc.stdout)["format"]["duration"])
             except Exception:
                 pass

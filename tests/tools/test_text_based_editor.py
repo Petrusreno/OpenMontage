@@ -191,6 +191,28 @@ def test_execute_fails_on_all_invalid_words(tmp_path):
     assert not out.exists()
 
 
+def test_execute_survives_corrupt_input_file(tmp_path):
+    # A real *existing* file that ffprobe cannot parse (junk bytes) makes
+    # is_file() True in _duration(), so ffprobe runs and exits non-zero.
+    # run_command() uses subprocess.run(check=True), so that previously
+    # raised an uncaught CalledProcessError out of _duration() and crashed
+    # execute(). No render requested here, so ffmpeg is never invoked and
+    # only the _duration() path is exercised.
+    bad = tmp_path / "bad.mp4"
+    bad.write_bytes(b"not a real video, just junk bytes")
+    words = [_w("hum", 0.0, 1.0), _w("olá", 1.0, 2.0)]
+    out = tmp_path / "ed.json"
+    result = TextBasedEditor().execute({
+        "input_path": str(bad), "word_timestamps": words, "source": str(bad),
+        "output_path": str(out),
+    })
+    assert result.success, result.error
+    ed = json.loads(out.read_text())
+    validate_artifact("edit_decisions", ed)
+    # Duration falls back to the max word end-time (2.0s) since ffprobe failed.
+    assert ed["cuts"][-1]["out_seconds"] == 2.0
+
+
 def test_execute_requires_input_or_words():
     tool = TextBasedEditor()
     result = tool.execute({})
