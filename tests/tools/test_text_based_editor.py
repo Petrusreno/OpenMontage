@@ -286,13 +286,11 @@ def test_execute_render_fails_gracefully_on_bad_source(tmp_path):
     # execute() must return success=False instead of letting
     # subprocess.CalledProcessError propagate out of _render_cuts.
     #
-    # Note: a real *existing* file with junk bytes (e.g. b"not a real video")
-    # was tried first, but it crashes earlier — in _duration()'s unguarded
-    # ffprobe call (input_path.is_file() is True there) — which is out of
-    # scope for this fix (only _render_cuts is guarded). A non-existent
-    # input_path skips _duration's ffprobe (is_file() is False, so duration
-    # falls back to word end-times) and reaches ffmpeg inside _render_cuts,
-    # which is the failure this test targets.
+    # A non-existent input_path skips _duration's ffprobe (is_file() is
+    # False, so duration falls back to word end-times) and reaches ffmpeg
+    # inside _render_cuts, which is the render failure this test targets.
+    # (A junk-bytes existing file also fails cleanly now that both
+    # _duration and _render_cuts guard their subprocess calls.)
     bad_src = tmp_path / "does_not_exist.mp4"
     words = [_w("a", 0.0, 0.9), _w("b", 1.0, 2.0), _w("c", 2.1, 3.0)]
     out = tmp_path / "ed.json"

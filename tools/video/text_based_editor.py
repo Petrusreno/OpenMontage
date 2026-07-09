@@ -267,7 +267,7 @@ class TextBasedEditor(BaseTool):
                     continue
                 if seg.is_file() and seg.stat().st_size > 0:
                     seg_files.append(seg)
-            if not seg_files or len(seg_files) != len(keeps):
+            if len(seg_files) != len(keeps):
                 return None
             list_path = workdir / "concat.txt"
             list_path.write_text("".join(f"file '{sf.resolve()}'\n" for sf in seg_files))
