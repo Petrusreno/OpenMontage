@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import subprocess
 import tempfile
 import time
 import unicodedata
@@ -254,23 +255,29 @@ class TextBasedEditor(BaseTool):
             seg_files = []
             for i, k in enumerate(keeps):
                 seg = workdir / f"seg_{i:04d}.mp4"
-                self.run_command([
-                    "ffmpeg", "-y", "-i", str(input_path),
-                    "-ss", f"{float(k['start']):.3f}", "-to", f"{float(k['end']):.3f}",
-                    "-c:v", "libx264", "-crf", "18", "-preset", "fast",
-                    "-c:a", "aac", "-b:a", "192k",
-                    "-force_key_frames", f"{float(k['start']):.3f}", str(seg),
-                ], timeout=300)
+                try:
+                    self.run_command([
+                        "ffmpeg", "-y", "-i", str(input_path),
+                        "-ss", f"{float(k['start']):.3f}", "-to", f"{float(k['end']):.3f}",
+                        "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+                        "-c:a", "aac", "-b:a", "192k",
+                        "-force_key_frames", f"{float(k['start']):.3f}", str(seg),
+                    ], timeout=300)
+                except subprocess.CalledProcessError:
+                    continue
                 if seg.is_file() and seg.stat().st_size > 0:
                     seg_files.append(seg)
-            if not seg_files:
+            if not seg_files or len(seg_files) != len(keeps):
                 return None
             list_path = workdir / "concat.txt"
             list_path.write_text("".join(f"file '{sf.resolve()}'\n" for sf in seg_files))
-            self.run_command([
-                "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_path),
-                "-c", "copy", str(render_path),
-            ], timeout=300)
+            try:
+                self.run_command([
+                    "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_path),
+                    "-c", "copy", str(render_path),
+                ], timeout=300)
+            except subprocess.CalledProcessError:
+                return None
             if render_path.is_file() and render_path.stat().st_size > 0:
                 return str(render_path)
             return None

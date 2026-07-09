@@ -249,3 +249,35 @@ def test_execute_render_produces_shorter_clip(tmp_path):
                      "-of", "csv=p=0", str(p)], capture_output=True, text=True)
         return float(r.stdout.strip())
     assert _dur(render) < _dur(src) - 0.3
+    # The -c:a copy concat path is the point of this test: confirm the
+    # rendered file actually retains an audio stream, not just video.
+    probe = _sp.run(["ffprobe", "-v", "error", "-select_streams", "a",
+                     "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(render)],
+                    capture_output=True, text=True)
+    assert "audio" in probe.stdout
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_render_fails_gracefully_on_bad_source(tmp_path):
+    # execute() has no input_path existence check, so a bad source reaches
+    # _render_cuts, where ffmpeg fails on it during the render step.
+    # execute() must return success=False instead of letting
+    # subprocess.CalledProcessError propagate out of _render_cuts.
+    #
+    # Note: a real *existing* file with junk bytes (e.g. b"not a real video")
+    # was tried first, but it crashes earlier — in _duration()'s unguarded
+    # ffprobe call (input_path.is_file() is True there) — which is out of
+    # scope for this fix (only _render_cuts is guarded). A non-existent
+    # input_path skips _duration's ffprobe (is_file() is False, so duration
+    # falls back to word end-times) and reaches ffmpeg inside _render_cuts,
+    # which is the failure this test targets.
+    bad_src = tmp_path / "does_not_exist.mp4"
+    words = [_w("a", 0.0, 0.9), _w("b", 1.0, 2.0), _w("c", 2.1, 3.0)]
+    out = tmp_path / "ed.json"
+    render = tmp_path / "cut.mp4"
+    result = TextBasedEditor().execute({
+        "input_path": str(bad_src), "word_timestamps": words, "source": str(bad_src),
+        "remove_fillers": False, "remove_ranges": [{"start_seconds": 1.0, "end_seconds": 2.0}],
+        "output_path": str(out), "render": True, "render_path": str(render),
+    })
+    assert result.success is False
