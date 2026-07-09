@@ -263,7 +263,7 @@ class TextBasedEditor(BaseTool):
                         "-c:a", "aac", "-b:a", "192k",
                         "-force_key_frames", f"{float(k['start']):.3f}", str(seg),
                     ], timeout=300)
-                except subprocess.CalledProcessError:
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
                     continue
                 if seg.is_file() and seg.stat().st_size > 0:
                     seg_files.append(seg)
@@ -276,7 +276,7 @@ class TextBasedEditor(BaseTool):
                     "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_path),
                     "-c", "copy", str(render_path),
                 ], timeout=300)
-            except subprocess.CalledProcessError:
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
                 return None
             if render_path.is_file() and render_path.stat().st_size > 0:
                 return str(render_path)

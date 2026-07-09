@@ -80,7 +80,7 @@ One `BaseTool` subclass, `tools/video/text_based_editor.py`, mirroring the contr
 ```
 input_path ──(if no word_timestamps)──► Transcriber ──► word_timestamps[{word,start,end}]
 word_timestamps + removal spec ──► build remove_spans (filler + repetition + explicit)
-remove_spans ──► merge overlaps ──► keep_segments = complement over [0, duration] (+padding, +gap-merge)
+remove_spans ──► merge overlaps ──► keep_segments = complement over [0, duration] (outward-padding, +gap-merge)
 keep_segments ──► edit_decisions{cuts[]} ──validate("edit_decisions")──► write JSON
                 └─(if render=true)─► cut each keep + concat (reuse silence_cutter render) ─► MP4
 ```
@@ -96,7 +96,11 @@ keep_segments ──► edit_decisions{cuts[]} ──validate("edit_decisions")�
   explicit word indices and explicit time ranges `{start_seconds,end_seconds}`.
 - `_merge_spans(spans) -> list[span]` — sort + merge overlapping/adjacent removal spans.
 - `_keep_segments(remove_spans, duration, padding, min_gap) -> list[{start,end}]` — complement
-  with padding and tiny-gap merge (adapted from `silence_cutter._compute_speech_segments`).
+  over `[0, duration]` with tiny-gap merge. Padding is applied **outward**: each removal is
+  widened by an effective `min(padding, removal_duration/2)` into its neighbours, so a flagged
+  filler word is fully excised (unlike `silence_cutter`, which pads *inward* to keep more speech
+  around silence). The per-removal clamp prevents an oversized `padding` from cancelling a short
+  removal. `padding_seconds=0` gives an exact cut with no neighbour trim.
 - `_to_edit_decisions(keep_segments, source, removed, mode) -> dict` — build the schema-valid
   artifact.
 - `_render_cuts(input_path, keep_segments, render_path) -> None` — cut+concat (reuse the proven
