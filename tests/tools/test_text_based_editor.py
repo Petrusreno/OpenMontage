@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess as _sp
 import unicodedata
+
+import pytest
 
 from schemas.artifacts import validate_artifact
 
@@ -177,6 +181,16 @@ def test_execute_fails_when_everything_removed(tmp_path):
     assert not out.exists()
 
 
+def test_execute_fails_on_all_invalid_words(tmp_path):
+    tool = TextBasedEditor()
+    words = [{"word": "a", "start": None, "end": None}]
+    out = tmp_path / "ed.json"
+    result = tool.execute({"word_timestamps": words, "source": "c.mp4",
+                           "output_path": str(out)})
+    assert not result.success
+    assert not out.exists()
+
+
 def test_execute_requires_input_or_words():
     tool = TextBasedEditor()
     result = tool.execute({})
@@ -206,3 +220,32 @@ def test_execute_removed_seconds_uses_merged_not_raw(tmp_path):
     assert abs(result.data["removed_seconds"] - 0.4) < 1e-6  # merged, not 0.8
     ed = json.loads(out.read_text())
     assert abs(ed["metadata"]["removed_seconds"] - 0.4) < 1e-6
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_render_produces_shorter_clip(tmp_path):
+    src = tmp_path / "src.mp4"
+    # 3s clip with an audio track so -c:a copy path is exercised.
+    _sp.run([
+        "ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=3",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+        "-pix_fmt", "yuv420p", "-shortest", str(src),
+    ], check=True, capture_output=True)
+    # Remove the middle second by explicit range.
+    words = [_w("a", 0.0, 0.9), _w("b", 1.0, 2.0), _w("c", 2.1, 3.0)]
+    out = tmp_path / "ed.json"
+    render = tmp_path / "cut.mp4"
+    result = TextBasedEditor().execute({
+        "input_path": str(src), "word_timestamps": words, "source": str(src),
+        "remove_fillers": False, "remove_ranges": [{"start_seconds": 1.0, "end_seconds": 2.0}],
+        "output_path": str(out), "render": True, "render_path": str(render),
+    })
+    assert result.success, result.error
+    assert render.exists() and render.stat().st_size > 0
+    assert result.data["rendered"] is True
+    # Rendered duration should be < source duration.
+    def _dur(p):
+        r = _sp.run(["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                     "-of", "csv=p=0", str(p)], capture_output=True, text=True)
+        return float(r.stdout.strip())
+    assert _dur(render) < _dur(src) - 0.3

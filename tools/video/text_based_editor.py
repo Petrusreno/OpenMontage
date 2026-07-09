@@ -11,10 +11,14 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import tempfile
 import time
 import unicodedata
 from pathlib import Path
 from typing import Any
+
+import jsonschema
 
 from tools.base_tool import (
     BaseTool,
@@ -242,6 +246,37 @@ class TextBasedEditor(BaseTool):
             return None
         return list(res.data.get("word_timestamps", [])), True
 
+    def _render_cuts(self, input_path: Path, keeps: list[dict], render_path: Path) -> str | None:
+        if not keeps:
+            return None
+        workdir = Path(tempfile.mkdtemp(prefix="tbe_render_"))
+        try:
+            seg_files = []
+            for i, k in enumerate(keeps):
+                seg = workdir / f"seg_{i:04d}.mp4"
+                self.run_command([
+                    "ffmpeg", "-y", "-i", str(input_path),
+                    "-ss", f"{float(k['start']):.3f}", "-to", f"{float(k['end']):.3f}",
+                    "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+                    "-c:a", "aac", "-b:a", "192k",
+                    "-force_key_frames", f"{float(k['start']):.3f}", str(seg),
+                ], timeout=300)
+                if seg.is_file() and seg.stat().st_size > 0:
+                    seg_files.append(seg)
+            if not seg_files:
+                return None
+            list_path = workdir / "concat.txt"
+            list_path.write_text("".join(f"file '{sf.resolve()}'\n" for sf in seg_files))
+            self.run_command([
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_path),
+                "-c", "copy", str(render_path),
+            ], timeout=300)
+            if render_path.is_file() and render_path.stat().st_size > 0:
+                return str(render_path)
+            return None
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         start = time.time()
         self._transcribe_error = None
@@ -290,9 +325,10 @@ class TextBasedEditor(BaseTool):
         merged = self._merge_spans(removed)
         keeps = self._keep_segments(merged, duration, padding, min_gap)
 
-        if removed and not keeps:
+        if not keeps:
             return ToolResult(success=False,
-                              error="Removals cover the entire clip; nothing left to keep.")
+                              error="Nothing left to keep (removals cover the entire clip, "
+                                    "or no valid word timestamps were available).")
 
         # Honest removed time: sum of the MERGED spans (overlapping detections of
         # the same word are counted once), not the raw per-reason report list.
@@ -306,16 +342,31 @@ class TextBasedEditor(BaseTool):
         ) if on], "language": language, "removed_seconds": merged_removed_seconds}
         ed = self._to_edit_decisions(keeps, source, removed, meta)
         from schemas.artifacts import validate_artifact
-        validate_artifact("edit_decisions", ed)
+        try:
+            validate_artifact("edit_decisions", ed)
+        except jsonschema.ValidationError as e:
+            return ToolResult(success=False,
+                              error=f"emitted edit_decisions failed schema validation: {e}")
 
         out_path = Path(inputs.get("output_path") or
                         (input_path.with_name(f"{input_path.stem}_edit_decisions.json")
                          if input_path else Path(source).with_suffix(".edit_decisions.json")))
         out_path.write_text(json.dumps(ed, ensure_ascii=False, indent=2, sort_keys=True))
 
+        rendered_path = None
+        if inputs.get("render") and input_path is not None:
+            default_render = input_path.with_name(f"{input_path.stem}_cut.mp4")
+            rendered_path = self._render_cuts(
+                input_path, keeps, Path(inputs.get("render_path") or default_render))
+            if rendered_path is None:
+                return ToolResult(success=False, error="Render failed (cut/concat produced no output).")
+
+        artifacts = [str(out_path)]
+        if rendered_path:
+            artifacts.append(rendered_path)
         return ToolResult(
             success=True,
-            artifacts=[str(out_path)],
+            artifacts=artifacts,
             duration_seconds=time.time() - start,
             data={
                 "removed": removed,
@@ -324,7 +375,7 @@ class TextBasedEditor(BaseTool):
                 "kept_seconds": ed["metadata"]["kept_seconds"],
                 "cuts_count": len(ed["cuts"]),
                 "skipped_words": skipped,
-                "rendered": False,
+                "rendered": rendered_path is not None,
                 "transcribed": transcribed,
             },
         )
