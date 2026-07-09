@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
+
 from tools.base_tool import (
     BaseTool,
     Determinism,
@@ -48,6 +50,29 @@ class MulticamSync(BaseTool):
             "output_path": {"type": "string"},
         },
     }
+
+    def _xcorr_lag(self, ref: np.ndarray, other: np.ndarray, sample_rate: int) -> tuple[float, float]:
+        """FFT cross-correlation. Returns (lag_seconds, confidence in [0,1]).
+
+        lag is the shift at which `other` aligns to `ref`: if `other` is `ref`
+        delayed by D seconds, lag == +D.
+        """
+        ref = np.asarray(ref, dtype=np.float64)
+        other = np.asarray(other, dtype=np.float64)
+        if ref.size == 0 or other.size == 0:
+            return 0.0, 0.0
+        n = 1 << int(np.ceil(np.log2(ref.size + other.size)))
+        fa = np.fft.rfft(ref, n)
+        fb = np.fft.rfft(other, n)
+        cc = np.fft.irfft(fb * np.conj(fa), n)
+        # Reassemble into full correlation with zero-lag centered.
+        cc = np.concatenate([cc[-(ref.size - 1):], cc[:other.size]])
+        lags = np.arange(-(ref.size - 1), other.size)
+        peak_idx = int(np.argmax(cc))
+        lag_samples = int(lags[peak_idx])
+        energy = float(np.sqrt(np.sum(ref ** 2) * np.sum(other ** 2)))
+        confidence = 0.0 if energy == 0.0 else float(max(0.0, cc[peak_idx] / energy))
+        return lag_samples / sample_rate, min(1.0, confidence)
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         return ToolResult(success=False, error="not implemented")
