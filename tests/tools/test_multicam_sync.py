@@ -49,3 +49,12 @@ def test_xcorr_zero_lag_for_identical():
     lag, conf = MulticamSync()._xcorr_lag(a, a, sr)
     assert abs(lag) < 1.5 / sr
     assert conf > 0.99
+
+
+def test_xcorr_single_sample_ref_does_not_crash():
+    # ref.size == 1 would make cc[-0:] the whole array (IndexError) without the guard.
+    sr = 8000
+    lag, conf = MulticamSync()._xcorr_lag(
+        np.array([-1.0], dtype=np.float32),
+        np.array([1, 2, 3, 4, 5], dtype=np.float32), sr)
+    assert isinstance(lag, float) and isinstance(conf, float)

@@ -66,7 +66,9 @@ class MulticamSync(BaseTool):
         fb = np.fft.rfft(other, n)
         cc = np.fft.irfft(fb * np.conj(fa), n)
         # Reassemble into full correlation with zero-lag centered.
-        cc = np.concatenate([cc[-(ref.size - 1):], cc[:other.size]])
+        # Guard ref.size == 1: `cc[-0:]` would be the whole array, not empty.
+        head = cc[-(ref.size - 1):] if ref.size > 1 else cc[:0]
+        cc = np.concatenate([head, cc[:other.size]])
         lags = np.arange(-(ref.size - 1), other.size)
         peak_idx = int(np.argmax(cc))
         lag_samples = int(lags[peak_idx])
