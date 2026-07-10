@@ -98,7 +98,7 @@ class ColorMatch(BaseTool):
         try:
             proc = subprocess.run(
                 ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-                 "-of", "json", str(path)], capture_output=True, text=True, check=True)
+                 "-of", "json", str(path)], capture_output=True, text=True, check=True, timeout=30)
             return float(json.loads(proc.stdout)["format"]["duration"]) / 2.0
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError,
                 ValueError, KeyError):
@@ -110,7 +110,7 @@ class ColorMatch(BaseTool):
             subprocess.run(
                 ["ffmpeg", "-y", "-v", "quiet", "-ss", f"{float(at_seconds):.3f}",
                  "-i", str(path), "-frames:v", "1", str(dest)],
-                capture_output=True, check=True)
+                capture_output=True, check=True, timeout=60)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
             return None
         if not dest.is_file() or dest.stat().st_size == 0:
@@ -126,7 +126,7 @@ class ColorMatch(BaseTool):
             proc = subprocess.run(
                 ["ffprobe", "-v", "error", "-select_streams", "a",
                  "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
-                capture_output=True, text=True, check=False)
+                capture_output=True, text=True, check=False, timeout=30)
         except (subprocess.TimeoutExpired, OSError):
             return False
         return bool(proc.stdout.strip())

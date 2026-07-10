@@ -105,3 +105,17 @@ def test_midpoint_of_two_second_clip(tmp_path):
 
 def test_extract_frame_missing_file_returns_none(tmp_path):
     assert ColorMatch()._extract_frame("/no/such.mp4", 0.0, tmp_path / "x.png") is None
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_has_audio_true_false(tmp_path):
+    silent = tmp_path / "silent.mp4"
+    _make_solid_clip(silent, "0x808080")          # color source has no audio track
+    tone = tmp_path / "tone.mp4"
+    _sp.run([
+        "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=0x808080:s=48x48:d=1:r=10",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-shortest", str(tone),
+    ], check=True, capture_output=True)
+    tool = ColorMatch()
+    assert tool._has_audio(str(silent)) is False
+    assert tool._has_audio(str(tone)) is True
