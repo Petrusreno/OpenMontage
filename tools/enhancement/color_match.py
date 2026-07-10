@@ -150,11 +150,19 @@ class ColorMatch(BaseTool):
         if not reference_path.is_file():
             return ToolResult(success=False, error=f"Reference not found: {reference_path}")
 
-        intensity = float(inputs.get("intensity", 1.0))
+        # Boundary-validate numeric params (input_schema is descriptive only; BaseTool
+        # does not enforce it) so bad input fails cleanly instead of raising a traceback.
+        try:
+            intensity = float(inputs.get("intensity", 1.0))
+            crf = int(inputs.get("crf", 20))
+            in_t = None if inputs.get("input_time") is None else float(inputs["input_time"])
+            ref_t = None if inputs.get("reference_time") is None else float(inputs["reference_time"])
+        except (TypeError, ValueError):
+            return ToolResult(success=False,
+                              error="intensity/crf/input_time/reference_time must be numeric.")
+        if not 0.0 <= intensity <= 1.0:
+            return ToolResult(success=False, error="intensity must be between 0.0 and 1.0.")
         codec = str(inputs.get("codec", "libx264"))
-        crf = int(inputs.get("crf", 20))
-        in_t = inputs.get("input_time")
-        ref_t = inputs.get("reference_time")
         out_path = Path(inputs.get("output_path") or
                         input_path.with_name(f"{input_path.stem}_matched.mp4"))
 
@@ -185,9 +193,16 @@ class ColorMatch(BaseTool):
             if not out_path.is_file() or out_path.stat().st_size == 0:
                 return ToolResult(success=False, error="Output not created or empty.")
 
-            # Honest before/after metric: re-measure the OUTPUT frame.
+            # Honest before/after metric: re-measure the OUTPUT frame. If that
+            # re-extraction fails, fall back to the input mean (so delta_after ==
+            # delta_before and improved is False — never a fabricated improvement)
+            # and flag it so the reported after-mean isn't mistaken for a measurement.
             out_frame = self._extract_frame(str(out_path), t_at, workdir / "o.png")
-            m_after = self._frame_stats(out_frame)[0] if out_frame else m_t
+            if out_frame:
+                m_after = self._frame_stats(out_frame)[0]
+            else:
+                m_after = m_t
+                clamp_notes.append({"metric": "target_mean_after", "reason": "output_reextract_failed"})
             delta_before = self._mean_delta(m_t, m_r)
             delta_after = self._mean_delta(m_after, m_r)
 

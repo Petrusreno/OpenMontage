@@ -132,6 +132,22 @@ def test_execute_requires_both_paths(tmp_path):
     assert not result.success
 
 
+def test_execute_rejects_out_of_range_intensity(tmp_path):
+    result = ColorMatch().execute({
+        "input_path": str(tmp_path / "a.mp4"), "reference_path": str(tmp_path / "b.mp4"),
+        "intensity": 2.0})
+    assert not result.success
+    assert "intensity" in (result.error or "")
+
+
+def test_execute_rejects_non_numeric_param(tmp_path):
+    # crf="hi" would raise ValueError without the boundary guard.
+    result = ColorMatch().execute({
+        "input_path": str(tmp_path / "a.mp4"), "reference_path": str(tmp_path / "b.mp4"),
+        "crf": "hi"})
+    assert not result.success
+
+
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
 def test_execute_matches_target_toward_reference(tmp_path):
     target = tmp_path / "target.mp4"
