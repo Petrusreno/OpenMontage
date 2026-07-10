@@ -116,6 +116,20 @@ def test_extract_samples_missing_file_returns_none():
     assert MulticamSync()._extract_samples("/no/such/file.wav", 8000, 60) is None
 
 
+def test_pairwise_pivot_silent_confidence_zero():
+    sr = 8000
+    samples_list = [np.zeros(8000, np.float32), _click_signal(sr)]
+    out = MulticamSync()._pairwise_offsets(samples_list, sr)
+    assert out[0] == (0.0, 0.0)
+
+
+def test_pairwise_pivot_real_confidence_one():
+    sr = 8000
+    samples_list = [_click_signal(sr), _click_signal(sr)]
+    out = MulticamSync()._pairwise_offsets(samples_list, sr)
+    assert out[0] == (0.0, 1.0)
+
+
 def test_rebaseline_auto_picks_earliest_and_offsets_nonneg():
     tool = MulticamSync()
     # pivot=clip0. lag_i = _xcorr_lag(pivot, clip_i): clip1 delayed +0.4 vs pivot,
@@ -171,6 +185,19 @@ def test_to_report_skipped_clip_shape():
     # The skipped clip is excluded from the confidence aggregates.
     assert report["max_confidence"] == pytest.approx(1.0)
     assert report["min_confidence_observed"] == pytest.approx(0.8)
+
+
+def test_to_report_low_confidence_clip_not_dropped():
+    tool = MulticamSync()
+    report = tool._to_report(
+        clips=["a", "b"], reference_index=0,
+        offsets=[0.0, 1.7], confidences=[1.0, 0.0], skipped=[],
+        params={"sample_rate": 8000, "window_seconds": 60, "min_confidence": 0.1},
+    )
+    entry = next(o for o in report["offsets"] if o["index"] == 1)
+    assert entry["offset_seconds"] == pytest.approx(1.7)
+    assert entry["low_confidence"] is True
+    assert report["min_confidence_observed"] == pytest.approx(0.0)
 
 
 def _write_report_and_load(tool, inputs):

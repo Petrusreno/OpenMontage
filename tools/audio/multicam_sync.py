@@ -112,7 +112,8 @@ class MulticamSync(BaseTool):
 
     def _pairwise_offsets(self, samples_list: list, sample_rate: int) -> list[tuple[float, float]]:
         pivot = samples_list[0]
-        out = [(0.0, 1.0)]
+        pivot_conf = 0.0 if float(np.sum(np.asarray(pivot, dtype=np.float64) ** 2)) == 0.0 else 1.0
+        out = [(0.0, pivot_conf)]
         for s in samples_list[1:]:
             out.append(self._xcorr_lag(pivot, s, sample_rate))
         return out
