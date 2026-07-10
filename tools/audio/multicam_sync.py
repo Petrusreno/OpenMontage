@@ -107,5 +107,51 @@ class MulticamSync(BaseTool):
             return None
         return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
 
+    def _pairwise_offsets(self, samples_list: list, sample_rate: int) -> list[tuple[float, float]]:
+        pivot = samples_list[0]
+        out = [(0.0, 1.0)]
+        for s in samples_list[1:]:
+            out.append(self._xcorr_lag(pivot, s, sample_rate))
+        return out
+
+    def _rebaseline(self, pairwise: list[tuple[float, float]],
+                    reference_index: int | None = None) -> tuple[int, list[float]]:
+        starts = [-lag for (lag, _conf) in pairwise]
+        if reference_index is None:
+            min_start = min(starts)
+            ref = starts.index(min_start)
+            offsets = [s - min_start for s in starts]
+        else:
+            ref = reference_index
+            base = starts[ref]
+            offsets = [s - base for s in starts]
+        return ref, offsets
+
+    def _to_report(self, clips: list[str], reference_index: int, offsets: list[float],
+                   confidences: list[float], skipped: list[dict], params: dict) -> dict:
+        min_conf = float(params.get("min_confidence", 0.1))
+        entries = []
+        for i, src in enumerate(clips):
+            if any(sk["index"] == i for sk in skipped):
+                entries.append({"index": i, "source": src, "offset_seconds": None,
+                                "confidence": None, "low_confidence": True})
+            else:
+                conf = round(float(confidences[i]), 4)
+                entries.append({"index": i, "source": src,
+                                "offset_seconds": round(float(offsets[i]), 4),
+                                "confidence": conf, "low_confidence": conf < min_conf})
+        usable = [e["confidence"] for e in entries if e["confidence"] is not None]
+        return {
+            "version": "1.0",
+            "reference_index": reference_index,
+            "reference_source": clips[reference_index],
+            "sample_rate": int(params.get("sample_rate", 8000)),
+            "window_seconds": float(params.get("window_seconds", 60)),
+            "offsets": entries,
+            "skipped": skipped,
+            "max_confidence": round(max(usable), 4) if usable else 0.0,
+            "min_confidence_observed": round(min(usable), 4) if usable else 0.0,
+        }
+
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         return ToolResult(success=False, error="not implemented")

@@ -113,3 +113,41 @@ def test_has_audio_true_false(tmp_path):
 
 def test_extract_samples_missing_file_returns_none():
     assert MulticamSync()._extract_samples("/no/such/file.wav", 8000, 60) is None
+
+
+def test_rebaseline_auto_picks_earliest_and_offsets_nonneg():
+    tool = MulticamSync()
+    # pivot=clip0. lag_i = _xcorr_lag(pivot, clip_i): clip1 delayed +0.4 vs pivot,
+    # clip2 delayed -0.2 vs pivot (i.e. clip2 started later than pivot).
+    pairwise = [(0.0, 1.0), (0.4, 0.9), (-0.2, 0.8)]
+    ref, offsets = tool._rebaseline(pairwise, reference_index=None)
+    # start_i = -lag_i => [0.0, -0.4, 0.2]; earliest = clip1 (start -0.4) => ref=1
+    assert ref == 1
+    assert offsets == pytest.approx([0.4, 0.0, 0.6])
+    assert min(offsets) == pytest.approx(0.0)
+    assert all(o >= -1e-9 for o in offsets)
+
+
+def test_rebaseline_explicit_reference_is_zero_others_relative():
+    tool = MulticamSync()
+    pairwise = [(0.0, 1.0), (0.4, 0.9), (-0.2, 0.8)]   # start_i = [0.0, -0.4, 0.2]
+    ref, offsets = tool._rebaseline(pairwise, reference_index=2)
+    assert ref == 2
+    assert offsets[2] == pytest.approx(0.0)
+    # relative spacing preserved: start_i - start_2  => [-0.2, -0.6, 0.0]
+    assert offsets == pytest.approx([-0.2, -0.6, 0.0])
+
+
+def test_to_report_shape():
+    tool = MulticamSync()
+    report = tool._to_report(
+        clips=["a.mp4", "b.mp4"], reference_index=0,
+        offsets=[0.0, 0.4], confidences=[1.0, 0.9], skipped=[],
+        params={"sample_rate": 8000, "window_seconds": 60, "min_confidence": 0.1},
+    )
+    assert report["reference_index"] == 0
+    assert report["reference_source"] == "a.mp4"
+    assert [o["index"] for o in report["offsets"]] == [0, 1]
+    assert report["offsets"][1]["offset_seconds"] == pytest.approx(0.4)
+    assert report["offsets"][1]["low_confidence"] is False
+    assert report["sample_rate"] == 8000
