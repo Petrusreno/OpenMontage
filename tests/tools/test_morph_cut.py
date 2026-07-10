@@ -1,4 +1,3 @@
-# tests/tools/test_morph_cut.py
 from __future__ import annotations
 
 from tools.video.morph_cut import MorphCut

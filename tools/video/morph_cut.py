@@ -1,4 +1,3 @@
-# tools/video/morph_cut.py
 """Morph Cut — smooth hard jump cuts with ffmpeg optical-flow interpolation.
 
 For each specified cut, a short window around the join is re-timed with
