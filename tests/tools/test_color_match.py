@@ -1,9 +1,21 @@
 from __future__ import annotations
 
 import math
+import shutil
+import subprocess as _sp
+from pathlib import Path
+
+import pytest
 
 from tools.enhancement.color_match import ColorMatch
 from tools.base_tool import ToolTier
+
+
+def _make_solid_clip(path: Path, hexcolor: str, dur: float = 1.0) -> None:
+    _sp.run([
+        "ffmpeg", "-y", "-f", "lavfi",
+        "-i", f"color=c={hexcolor}:s=48x48:d={dur}:r=10", str(path),
+    ], check=True, capture_output=True)
 
 
 def test_contract_fields_present():
@@ -70,3 +82,26 @@ def test_lutrgb_expr_format():
     assert "r='clip(1.000000*val+128.000000,0,255)'" in expr
     assert "g='clip(1.000000*val-16.000000,0,255)'" in expr
     assert "b='clip(1.000000*val-111.000000,0,255)'" in expr
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_extract_frame_and_stats(tmp_path):
+    clip = tmp_path / "blue.mp4"
+    _make_solid_clip(clip, "0x3060A0")            # R=0x30=48, G=0x60=96, B=0xA0=160
+    tool = ColorMatch()
+    frame = tool._extract_frame(str(clip), 0.0, tmp_path / "f.png")
+    assert frame is not None and Path(frame).exists()
+    mean, std = tool._frame_stats(frame)
+    assert abs(mean[0] - 48) < 3 and abs(mean[1] - 96) < 3 and abs(mean[2] - 160) < 3
+    assert max(std) < 2.0                          # solid color => near-zero variance
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_midpoint_of_two_second_clip(tmp_path):
+    clip = tmp_path / "c.mp4"
+    _make_solid_clip(clip, "0x808080", dur=2.0)
+    assert abs(ColorMatch()._midpoint(str(clip)) - 1.0) < 0.2
+
+
+def test_extract_frame_missing_file_returns_none(tmp_path):
+    assert ColorMatch()._extract_frame("/no/such.mp4", 0.0, tmp_path / "x.png") is None
