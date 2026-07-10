@@ -87,7 +87,8 @@ class MulticamSync(BaseTool):
             return False
         return bool(proc.stdout.strip())
 
-    def _extract_samples(self, path: str, sample_rate: int, window_seconds: float):
+    def _extract_samples(self, path: str, sample_rate: int,
+                         window_seconds: float) -> np.ndarray | None:
         if not self._has_audio(path):
             return None
         cmd = [
@@ -99,6 +100,9 @@ class MulticamSync(BaseTool):
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
             return None
         raw = proc.stdout
+        # Trim a stray trailing byte so an odd-length PCM buffer can't raise
+        # ValueError in np.frombuffer (int16 itemsize is 2).
+        raw = raw[: len(raw) - (len(raw) % 2)]
         if not raw:
             return None
         return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
