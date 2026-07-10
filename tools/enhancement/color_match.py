@@ -143,15 +143,9 @@ class ColorMatch(BaseTool):
         reference_path = inputs.get("reference_path")
         if not input_path or not reference_path:
             return ToolResult(success=False, error="input_path and reference_path are required.")
-        input_path = Path(input_path)
-        reference_path = Path(reference_path)
-        if not input_path.is_file():
-            return ToolResult(success=False, error=f"Target not found: {input_path}")
-        if not reference_path.is_file():
-            return ToolResult(success=False, error=f"Reference not found: {reference_path}")
 
-        # Boundary-validate numeric params (input_schema is descriptive only; BaseTool
-        # does not enforce it) so bad input fails cleanly instead of raising a traceback.
+        # Boundary-validate numeric params BEFORE touching the filesystem (input_schema is
+        # descriptive only; BaseTool does not enforce it) so bad input fails cleanly.
         try:
             intensity = float(inputs.get("intensity", 1.0))
             crf = int(inputs.get("crf", 20))
@@ -162,6 +156,13 @@ class ColorMatch(BaseTool):
                               error="intensity/crf/input_time/reference_time must be numeric.")
         if not 0.0 <= intensity <= 1.0:
             return ToolResult(success=False, error="intensity must be between 0.0 and 1.0.")
+
+        input_path = Path(input_path)
+        reference_path = Path(reference_path)
+        if not input_path.is_file():
+            return ToolResult(success=False, error=f"Target not found: {input_path}")
+        if not reference_path.is_file():
+            return ToolResult(success=False, error=f"Reference not found: {reference_path}")
         codec = str(inputs.get("codec", "libx264"))
         out_path = Path(inputs.get("output_path") or
                         input_path.with_name(f"{input_path.stem}_matched.mp4"))
