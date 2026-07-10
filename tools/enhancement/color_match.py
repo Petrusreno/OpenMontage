@@ -10,7 +10,10 @@ an honest before/after per-channel color-delta metric. Complements color_grade
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
+import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -131,5 +134,79 @@ class ColorMatch(BaseTool):
             return False
         return bool(proc.stdout.strip())
 
+    def _mean_delta(self, a, b) -> float:
+        return float(sum(abs(float(a[c]) - float(b[c])) for c in range(3)) / 3.0)
+
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
-        return ToolResult(success=False, error="not implemented")
+        start = time.time()
+        input_path = inputs.get("input_path")
+        reference_path = inputs.get("reference_path")
+        if not input_path or not reference_path:
+            return ToolResult(success=False, error="input_path and reference_path are required.")
+        input_path = Path(input_path)
+        reference_path = Path(reference_path)
+        if not input_path.is_file():
+            return ToolResult(success=False, error=f"Target not found: {input_path}")
+        if not reference_path.is_file():
+            return ToolResult(success=False, error=f"Reference not found: {reference_path}")
+
+        intensity = float(inputs.get("intensity", 1.0))
+        codec = str(inputs.get("codec", "libx264"))
+        crf = int(inputs.get("crf", 20))
+        in_t = inputs.get("input_time")
+        ref_t = inputs.get("reference_time")
+        out_path = Path(inputs.get("output_path") or
+                        input_path.with_name(f"{input_path.stem}_matched.mp4"))
+
+        workdir = Path(tempfile.mkdtemp(prefix="colormatch_"))
+        try:
+            t_at = float(in_t) if in_t is not None else self._midpoint(str(input_path))
+            r_at = float(ref_t) if ref_t is not None else self._midpoint(str(reference_path))
+            t_frame = self._extract_frame(str(input_path), t_at, workdir / "t.png")
+            if t_frame is None:
+                return ToolResult(success=False, error="Failed to extract a frame from the target.")
+            r_frame = self._extract_frame(str(reference_path), r_at, workdir / "r.png")
+            if r_frame is None:
+                return ToolResult(success=False, error="Failed to extract a frame from the reference.")
+
+            m_t, s_t = self._frame_stats(t_frame)
+            m_r, s_r = self._frame_stats(r_frame)
+            gains, offsets, clamp_notes = self._channel_affine(m_t, s_t, m_r, s_r, intensity)
+            vf = self._lutrgb_expr(gains, offsets)
+
+            cmd = ["ffmpeg", "-y", "-i", str(input_path), "-vf", vf,
+                   "-c:v", codec, "-crf", str(crf)]
+            cmd += ["-c:a", "copy"] if self._has_audio(str(input_path)) else ["-an"]
+            cmd += [str(out_path)]
+            try:
+                self.run_command(cmd, timeout=600)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+                return ToolResult(success=False, error=f"color match render failed: {exc}")
+            if not out_path.is_file() or out_path.stat().st_size == 0:
+                return ToolResult(success=False, error="Output not created or empty.")
+
+            # Honest before/after metric: re-measure the OUTPUT frame.
+            out_frame = self._extract_frame(str(out_path), t_at, workdir / "o.png")
+            m_after = self._frame_stats(out_frame)[0] if out_frame else m_t
+            delta_before = self._mean_delta(m_t, m_r)
+            delta_after = self._mean_delta(m_after, m_r)
+
+            return ToolResult(
+                success=True,
+                artifacts=[str(out_path)],
+                duration_seconds=time.time() - start,
+                data={
+                    "gains": [round(g, 6) for g in gains],
+                    "offsets": [round(o, 6) for o in offsets],
+                    "reference_mean": [round(x, 3) for x in m_r],
+                    "target_mean_before": [round(x, 3) for x in m_t],
+                    "target_mean_after": [round(x, 3) for x in m_after],
+                    "mean_delta_before": round(delta_before, 3),
+                    "mean_delta_after": round(delta_after, 3),
+                    "improved": delta_after < delta_before,
+                    "clamp_notes": clamp_notes,
+                    "intensity": intensity,
+                },
+            )
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)

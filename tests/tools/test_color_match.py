@@ -119,3 +119,68 @@ def test_has_audio_true_false(tmp_path):
     tool = ColorMatch()
     assert tool._has_audio(str(silent)) is False
     assert tool._has_audio(str(tone)) is True
+
+
+def test_mean_delta():
+    tool = ColorMatch()
+    assert abs(tool._mean_delta([10.0, 20.0, 30.0], [10.0, 20.0, 30.0])) < 1e-9
+    assert abs(tool._mean_delta([0.0, 0.0, 0.0], [3.0, 6.0, 9.0]) - 6.0) < 1e-9
+
+
+def test_execute_requires_both_paths(tmp_path):
+    result = ColorMatch().execute({"input_path": str(tmp_path / "a.mp4")})
+    assert not result.success
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_matches_target_toward_reference(tmp_path):
+    target = tmp_path / "target.mp4"
+    reference = tmp_path / "ref.mp4"
+    _make_solid_clip(target, "0x3060A0")          # bluish
+    _make_solid_clip(reference, "0xB05030")       # reddish
+    out = tmp_path / "matched.mp4"
+    result = ColorMatch().execute({
+        "input_path": str(target), "reference_path": str(reference),
+        "output_path": str(out),
+    })
+    assert result.success, result.error
+    assert out.exists() and out.stat().st_size > 0
+    assert result.data["improved"] is True
+    assert result.data["mean_delta_after"] < result.data["mean_delta_before"]
+    # after-match target mean is close to the reference mean
+    for c in range(3):
+        assert abs(result.data["target_mean_after"][c] - result.data["reference_mean"][c]) < 8
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_intensity_zero_is_near_identity(tmp_path):
+    target = tmp_path / "t.mp4"; reference = tmp_path / "r.mp4"
+    _make_solid_clip(target, "0x3060A0"); _make_solid_clip(reference, "0xB05030")
+    out = tmp_path / "o.mp4"
+    result = ColorMatch().execute({
+        "input_path": str(target), "reference_path": str(reference),
+        "output_path": str(out), "intensity": 0.0})
+    assert result.success, result.error
+    assert result.data["gains"] == [1.0, 1.0, 1.0]
+    assert result.data["offsets"] == [0.0, 0.0, 0.0]
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_missing_reference_fails(tmp_path):
+    target = tmp_path / "t.mp4"; _make_solid_clip(target, "0x3060A0")
+    result = ColorMatch().execute({
+        "input_path": str(target), "reference_path": str(tmp_path / "nope.mp4"),
+        "output_path": str(tmp_path / "o.mp4")})
+    assert not result.success
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_is_deterministic(tmp_path):
+    target = tmp_path / "t.mp4"; reference = tmp_path / "r.mp4"
+    _make_solid_clip(target, "0x3060A0"); _make_solid_clip(reference, "0xB05030")
+    r1 = ColorMatch().execute({"input_path": str(target), "reference_path": str(reference),
+                               "output_path": str(tmp_path / "o1.mp4")})
+    r2 = ColorMatch().execute({"input_path": str(target), "reference_path": str(reference),
+                               "output_path": str(tmp_path / "o2.mp4")})
+    assert r1.data["gains"] == r2.data["gains"]
+    assert r1.data["offsets"] == r2.data["offsets"]
