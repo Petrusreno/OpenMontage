@@ -66,12 +66,12 @@ class ColorMatch(BaseTool):
                 g = 1.0
                 notes.append({"channel": channel_names[c], "reason": "flat_channel"})
             else:
+                # g >= 0 always (sr is a std >= 0, st_ >= EPS > 0), so only the
+                # upper clamp is reachable — and it is recorded, never silent.
                 g = sr / st_
                 if g > self.GAIN_MAX:
                     g = self.GAIN_MAX
                     notes.append({"channel": channel_names[c], "reason": "gain_clamped"})
-                elif g < 0.0:
-                    g = 0.0
             gain = 1.0 + intensity * (g - 1.0)
             offset = intensity * (mr - g * mt)
             gains.append(gain)
@@ -79,6 +79,8 @@ class ColorMatch(BaseTool):
         return gains, offsets, notes
 
     def _lutrgb_expr(self, gains: list[float], offsets: list[float]) -> str:
+        # gains/offsets must be length-3 (R, G, B) — as produced by
+        # _channel_affine on the length-3 stats from _frame_stats.
         channels = ["r", "g", "b"]
         parts = [
             f"{channels[c]}='clip({gains[c]:.6f}*val{offsets[c]:+.6f},0,255)'"
