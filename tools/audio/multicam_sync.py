@@ -8,6 +8,7 @@ explicit reference_index), and emits a JSON offsets report. No rendering.
 
 from __future__ import annotations
 
+import subprocess
 from typing import Any
 
 import numpy as np
@@ -75,6 +76,32 @@ class MulticamSync(BaseTool):
         energy = float(np.sqrt(np.sum(ref ** 2) * np.sum(other ** 2)))
         confidence = 0.0 if energy == 0.0 else float(max(0.0, cc[peak_idx] / energy))
         return lag_samples / sample_rate, min(1.0, confidence)
+
+    def _has_audio(self, path: str) -> bool:
+        try:
+            proc = self.run_command([
+                "ffprobe", "-v", "error", "-select_streams", "a",
+                "-show_entries", "stream=index", "-of", "csv=p=0", str(path),
+            ])
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            return False
+        return bool(proc.stdout.strip())
+
+    def _extract_samples(self, path: str, sample_rate: int, window_seconds: float):
+        if not self._has_audio(path):
+            return None
+        cmd = [
+            "ffmpeg", "-v", "quiet", "-t", f"{float(window_seconds):.3f}",
+            "-i", str(path), "-f", "s16le", "-ac", "1", "-ar", str(sample_rate), "pipe:1",
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, check=True)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            return None
+        raw = proc.stdout
+        if not raw:
+            return None
+        return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         return ToolResult(success=False, error="not implemented")

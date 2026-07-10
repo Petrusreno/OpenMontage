@@ -1,7 +1,12 @@
 # tests/tools/test_multicam_sync.py
 from __future__ import annotations
 
+import shutil
+import subprocess as _sp
+from pathlib import Path
+
 import numpy as np
+import pytest
 
 from tools.audio.multicam_sync import MulticamSync
 from tools.base_tool import ToolTier
@@ -58,3 +63,53 @@ def test_xcorr_single_sample_ref_does_not_crash():
         np.array([-1.0], dtype=np.float32),
         np.array([1, 2, 3, 4, 5], dtype=np.float32), sr)
     assert isinstance(lag, float) and isinstance(conf, float)
+
+
+def _make_tone_clip(path: Path, sr: int = 8000, dur: float = 1.0) -> None:
+    _sp.run([
+        "ffmpeg", "-y", "-f", "lavfi",
+        "-i", f"sine=frequency=440:duration={dur}:sample_rate={sr}",
+        str(path),
+    ], check=True, capture_output=True)
+
+
+def _make_silent_video_no_audio(path: Path) -> None:
+    _sp.run([
+        "ffmpeg", "-y", "-f", "lavfi",
+        "-i", "testsrc2=size=160x120:rate=15:duration=1",
+        "-an", "-pix_fmt", "yuv420p", str(path),
+    ], check=True, capture_output=True)
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_extract_samples_returns_float_array(tmp_path):
+    clip = tmp_path / "tone.wav"
+    _make_tone_clip(clip, sr=8000, dur=1.0)
+    samples = MulticamSync()._extract_samples(str(clip), 8000, 60)
+    assert samples is not None
+    assert samples.dtype == np.float32
+    assert 7000 < samples.size <= 8000          # ~1s at 8kHz
+    assert float(np.max(np.abs(samples))) <= 1.0
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_extract_samples_window_bounds_length(tmp_path):
+    clip = tmp_path / "tone.wav"
+    _make_tone_clip(clip, sr=8000, dur=3.0)
+    samples = MulticamSync()._extract_samples(str(clip), 8000, 1.0)   # 1s window of a 3s clip
+    assert samples is not None and samples.size <= 8000 + 10
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_has_audio_true_false(tmp_path):
+    tone = tmp_path / "tone.wav"
+    _make_tone_clip(tone)
+    silent = tmp_path / "silent.mp4"
+    _make_silent_video_no_audio(silent)
+    tool = MulticamSync()
+    assert tool._has_audio(str(tone)) is True
+    assert tool._has_audio(str(silent)) is False
+
+
+def test_extract_samples_missing_file_returns_none():
+    assert MulticamSync()._extract_samples("/no/such/file.wav", 8000, 60) is None
