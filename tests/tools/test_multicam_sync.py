@@ -1,6 +1,7 @@
 # tests/tools/test_multicam_sync.py
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess as _sp
 from pathlib import Path
@@ -151,3 +152,103 @@ def test_to_report_shape():
     assert report["offsets"][1]["offset_seconds"] == pytest.approx(0.4)
     assert report["offsets"][1]["low_confidence"] is False
     assert report["sample_rate"] == 8000
+
+
+def test_to_report_skipped_clip_shape():
+    tool = MulticamSync()
+    # Full-length offsets/confidences indexed by ORIGINAL clip position; index 1
+    # is a skipped (no-audio) clip whose slots carry placeholder 0.0 values.
+    report = tool._to_report(
+        clips=["a.mp4", "b.mp4", "c.mp4"], reference_index=0,
+        offsets=[0.0, 0.0, 0.6], confidences=[1.0, 0.0, 0.8],
+        skipped=[{"index": 1, "source": "b.mp4", "reason": "no audio or extraction failed"}],
+        params={"sample_rate": 8000, "window_seconds": 60, "min_confidence": 0.1},
+    )
+    skipped_entry = next(o for o in report["offsets"] if o["index"] == 1)
+    assert skipped_entry["offset_seconds"] is None
+    assert skipped_entry["confidence"] is None
+    assert skipped_entry["low_confidence"] is True
+    # The skipped clip is excluded from the confidence aggregates.
+    assert report["max_confidence"] == pytest.approx(1.0)
+    assert report["min_confidence_observed"] == pytest.approx(0.8)
+
+
+def _write_report_and_load(tool, inputs):
+    result = tool.execute(inputs)
+    return result
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_end_to_end_recovers_offset(tmp_path):
+    sr = 8000
+    early = tmp_path / "early.wav"
+    late = tmp_path / "late.wav"
+    _make_tone_clip(early, sr=sr, dur=2.0)
+    # `late` = 0.5s silence + the same tone => it started 0.5s EARLIER in real time?
+    # No: prepending silence means its shared content occurs 0.5s later, i.e. `late`
+    # started recording 0.5s BEFORE `early`. So `late` is the earliest => reference,
+    # and `early`'s offset should be +0.5.
+    # Bound anullsrc via :d=0.5 — a bare anullsrc is an infinite source and a
+    # misplaced `-t 0.5` binds to the NEXT input (sine), leaving anullsrc
+    # unbounded so `concat` reads it forever (hang). Assertions are unchanged.
+    _sp.run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", f"anullsrc=r={sr}:cl=mono:d=0.5",
+        "-f", "lavfi", "-i", f"sine=frequency=440:duration=2:sample_rate={sr}",
+        "-filter_complex", "[0][1]concat=n=2:v=0:a=1", str(late),
+    ], check=True, capture_output=True)
+    out = tmp_path / "sync.json"
+    result = MulticamSync().execute({
+        "clips": [str(early), str(late)], "sample_rate": sr,
+        "window_seconds": 60, "output_path": str(out),
+    })
+    assert result.success, result.error
+    assert out.exists()
+    report = json.loads(out.read_text())
+    # `late` is the earliest-start clip => reference (offset 0).
+    ref_src = report["reference_source"]
+    assert ref_src == str(late)
+    early_entry = next(o for o in report["offsets"] if o["source"] == str(early))
+    assert early_entry["offset_seconds"] == pytest.approx(0.5, abs=0.05)
+    assert early_entry["confidence"] > 0.3
+
+
+def test_execute_requires_two_clips():
+    result = MulticamSync().execute({"clips": ["only_one.wav"]})
+    assert not result.success
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_skips_no_audio_clip(tmp_path):
+    a = tmp_path / "a.wav"; b = tmp_path / "b.wav"
+    _make_tone_clip(a); _make_tone_clip(b)
+    silent = tmp_path / "silent.mp4"
+    _make_silent_video_no_audio(silent)
+    out = tmp_path / "s.json"
+    result = MulticamSync().execute({
+        "clips": [str(a), str(b), str(silent)], "output_path": str(out)})
+    assert result.success, result.error
+    report = json.loads(out.read_text())
+    assert any(sk["source"] == str(silent) for sk in report["skipped"])
+    silent_entry = next(o for o in report["offsets"] if o["source"] == str(silent))
+    assert silent_entry["offset_seconds"] is None
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_fails_when_fewer_than_two_usable(tmp_path):
+    a = tmp_path / "a.wav"; _make_tone_clip(a)
+    s1 = tmp_path / "s1.mp4"; s2 = tmp_path / "s2.mp4"
+    _make_silent_video_no_audio(s1); _make_silent_video_no_audio(s2)
+    result = MulticamSync().execute({"clips": [str(a), str(s1), str(s2)],
+                                     "output_path": str(tmp_path / "x.json")})
+    assert not result.success
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_is_deterministic(tmp_path):
+    a = tmp_path / "a.wav"; b = tmp_path / "b.wav"
+    _make_tone_clip(a, dur=1.5); _make_tone_clip(b, dur=1.5)
+    o1 = tmp_path / "o1.json"; o2 = tmp_path / "o2.json"
+    MulticamSync().execute({"clips": [str(a), str(b)], "output_path": str(o1)})
+    MulticamSync().execute({"clips": [str(a), str(b)], "output_path": str(o2)})
+    assert o1.read_text() == o2.read_text()

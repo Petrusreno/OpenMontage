@@ -8,7 +8,10 @@ explicit reference_index), and emits a JSON offsets report. No rendering.
 
 from __future__ import annotations
 
+import json
 import subprocess
+import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -129,6 +132,10 @@ class MulticamSync(BaseTool):
 
     def _to_report(self, clips: list[str], reference_index: int, offsets: list[float],
                    confidences: list[float], skipped: list[dict], params: dict) -> dict:
+        """Assemble the offsets report. `offsets`/`confidences` are FULL-LENGTH
+        arrays indexed by each clip's ORIGINAL position in `clips`, and
+        `reference_index` is an ORIGINAL clip index; skipped clips carry
+        placeholder slots and are emitted as null (excluded from aggregates)."""
         min_conf = float(params.get("min_confidence", 0.1))
         entries = []
         for i, src in enumerate(clips):
@@ -154,4 +161,72 @@ class MulticamSync(BaseTool):
         }
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
-        return ToolResult(success=False, error="not implemented")
+        start = time.time()
+        clips = inputs.get("clips") or []
+        if len(clips) < 2:
+            return ToolResult(success=False, error="multicam_sync needs at least 2 clips.")
+
+        sample_rate = int(inputs.get("sample_rate", 8000))
+        window_seconds = float(inputs.get("window_seconds", 60))
+        params = {
+            "sample_rate": sample_rate,
+            "window_seconds": window_seconds,
+            "min_confidence": float(inputs.get("min_confidence", 0.1)),
+        }
+
+        # Extract samples; record skips honestly.
+        samples_by_index: dict[int, Any] = {}
+        skipped: list[dict] = []
+        for i, clip in enumerate(clips):
+            s = self._extract_samples(clip, sample_rate, window_seconds)
+            if s is None or s.size == 0:
+                skipped.append({"index": i, "source": clip, "reason": "no audio or extraction failed"})
+            else:
+                samples_by_index[i] = s
+
+        usable = sorted(samples_by_index.keys())
+        if len(usable) < 2:
+            return ToolResult(success=False,
+                              error="Fewer than 2 clips have usable audio; cannot synchronize.")
+
+        # Optional explicit reference must be a usable clip.
+        req_ref = inputs.get("reference_index")
+        if req_ref is not None and req_ref not in usable:
+            return ToolResult(success=False,
+                              error=f"reference_index {req_ref} is not a usable (audio-bearing) clip.")
+
+        usable_samples = [samples_by_index[i] for i in usable]
+        pairwise = self._pairwise_offsets(usable_samples, sample_rate)
+        local_ref = None if req_ref is None else usable.index(req_ref)
+        ref_local, offsets_local = self._rebaseline(pairwise, local_ref)
+
+        # Map usable-local results back to original clip indices.
+        offsets_full = [0.0] * len(clips)
+        conf_full = [0.0] * len(clips)
+        for local_i, orig_i in enumerate(usable):
+            offsets_full[orig_i] = offsets_local[local_i]
+            conf_full[orig_i] = pairwise[local_i][1]
+        reference_index = usable[ref_local]
+
+        report = self._to_report(clips, reference_index, offsets_full, conf_full, skipped, params)
+
+        out_path = Path(inputs.get("output_path") or
+                        Path(clips[reference_index]).with_suffix(".sync.json"))
+        out_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+
+        usable_confs = [conf_full[i] for i in usable]
+        return ToolResult(
+            success=True,
+            artifacts=[str(out_path)],
+            duration_seconds=time.time() - start,
+            data={
+                "reference_index": reference_index,
+                "reference_source": clips[reference_index],
+                "sample_rate": sample_rate,
+                "window_seconds": window_seconds,
+                "offsets": report["offsets"],
+                "skipped": skipped,
+                "max_confidence": round(max(usable_confs), 4),
+                "min_confidence_observed": round(min(usable_confs), 4),
+            },
+        )
