@@ -149,6 +149,31 @@ def test_execute_rejects_non_numeric_param(tmp_path):
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_exercises_std_gain_path_through_ffmpeg(tmp_path):
+    # Solid-color clips have std=0 (flat_channel -> gain 1.0), so they never drive
+    # the std/contrast half of the Reinhard transform through the real lutrgb pass.
+    # Structured sources (real per-channel variance) do — this locks that path.
+    target = tmp_path / "target.mp4"
+    reference = tmp_path / "ref.mp4"
+    _sp.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=s=64x64:d=1:r=10",
+             str(target)], check=True, capture_output=True)
+    _sp.run(["ffmpeg", "-y", "-f", "lavfi",
+             "-i", "gradients=s=64x64:c0=0x200040:c1=0xFFC080:d=1:r=10",
+             str(reference)], check=True, capture_output=True)
+    out = tmp_path / "matched.mp4"
+    result = ColorMatch().execute({
+        "input_path": str(target), "reference_path": str(reference),
+        "output_path": str(out)})
+    assert result.success, result.error
+    assert out.exists() and out.stat().st_size > 0
+    # Real variance => no flat-channel fallback, and a genuine non-unity gain applied.
+    assert not any(n.get("reason") == "flat_channel" for n in result.data["clamp_notes"])
+    assert any(abs(g - 1.0) > 0.05 for g in result.data["gains"])
+    assert result.data["improved"] is True
+    assert result.data["mean_delta_after"] < result.data["mean_delta_before"]
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
 def test_execute_matches_target_toward_reference(tmp_path):
     target = tmp_path / "target.mp4"
     reference = tmp_path / "ref.mp4"
