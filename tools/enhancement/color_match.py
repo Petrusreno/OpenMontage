@@ -52,5 +52,39 @@ class ColorMatch(BaseTool):
         },
     }
 
+    EPS = 1.0
+    GAIN_MAX = 3.0
+
+    def _channel_affine(self, m_t, s_t, m_r, s_r, intensity: float):
+        gains: list[float] = []
+        offsets: list[float] = []
+        notes: list[dict] = []
+        channel_names = ["r", "g", "b"]
+        for c in range(len(m_t)):
+            mt, st_, mr, sr = float(m_t[c]), float(s_t[c]), float(m_r[c]), float(s_r[c])
+            if st_ < self.EPS:
+                g = 1.0
+                notes.append({"channel": channel_names[c], "reason": "flat_channel"})
+            else:
+                g = sr / st_
+                if g > self.GAIN_MAX:
+                    g = self.GAIN_MAX
+                    notes.append({"channel": channel_names[c], "reason": "gain_clamped"})
+                elif g < 0.0:
+                    g = 0.0
+            gain = 1.0 + intensity * (g - 1.0)
+            offset = intensity * (mr - g * mt)
+            gains.append(gain)
+            offsets.append(offset)
+        return gains, offsets, notes
+
+    def _lutrgb_expr(self, gains: list[float], offsets: list[float]) -> str:
+        channels = ["r", "g", "b"]
+        parts = [
+            f"{channels[c]}='clip({gains[c]:.6f}*val{offsets[c]:+.6f},0,255)'"
+            for c in range(3)
+        ]
+        return "lutrgb=" + ":".join(parts)
+
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         return ToolResult(success=False, error="not implemented")
