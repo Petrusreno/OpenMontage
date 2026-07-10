@@ -245,6 +245,13 @@ def test_execute_requires_two_clips():
     assert not result.success
 
 
+def test_execute_rejects_out_of_range_sample_rate():
+    # sample_rate=0 would raise ZeroDivisionError without the boundary guard.
+    result = MulticamSync().execute({"clips": ["a.wav", "b.wav"], "sample_rate": 0})
+    assert not result.success
+    assert "sample_rate" in (result.error or "")
+
+
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
 def test_execute_skips_no_audio_clip(tmp_path):
     a = tmp_path / "a.wav"; b = tmp_path / "b.wav"

@@ -169,6 +169,11 @@ class MulticamSync(BaseTool):
 
         sample_rate = int(inputs.get("sample_rate", 8000))
         window_seconds = float(inputs.get("window_seconds", 60))
+        if sample_rate < 1000 or window_seconds < 1:
+            return ToolResult(
+                success=False,
+                error="sample_rate must be >= 1000 and window_seconds >= 1.",
+            )
         params = {
             "sample_rate": sample_rate,
             "window_seconds": window_seconds,
