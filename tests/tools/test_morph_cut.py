@@ -157,9 +157,6 @@ def test_concat_handles_path_with_apostrophe(tmp_path):
     assert out and Path(out).exists() and Path(out).stat().st_size > 0
 
 
-SMOOTH_ANCHOR_NOTE = "e2e honesty anchor"
-
-
 def test_execute_requires_cuts(tmp_path):
     result = MorphCut().execute({"input_path": str(tmp_path / "a.mp4"), "cut_seconds": []})
     assert not result.success
@@ -206,6 +203,25 @@ def test_execute_degrades_honestly_on_large_jump(tmp_path):
     assert result.success, result.error                # still succeeds (video produced)
     assert out.exists()
     assert result.data["per_cut"][0]["smoothed"] is False   # reported, not faked
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_preserves_audio(tmp_path):
+    # Core spec requirement: an audio-bearing input keeps its audio in sync (the mux path,
+    # which the audio-less fixtures never exercise). Build a jump clip, mux a tone onto it.
+    silent = tmp_path / "silent.mp4"
+    _make_jump_clip(silent, 40, 52)
+    clip = tmp_path / "withaudio.mp4"
+    _sp.run(["ffmpeg", "-y", "-v", "quiet", "-i", str(silent),
+             "-f", "lavfi", "-i", "sine=frequency=440:duration=1.2", "-shortest",
+             "-c:v", "copy", "-c:a", "aac", str(clip)], check=True, capture_output=True)
+    out = tmp_path / "morphed.mp4"
+    tool = MorphCut()
+    result = tool.execute({"input_path": str(clip), "cut_seconds": [0.6], "output_path": str(out)})
+    assert result.success, result.error
+    assert out.exists() and out.stat().st_size > 0
+    assert tool._has_audio(str(out)) is True                 # audio survived the morph + mux
+    assert abs(tool._duration(str(out)) - 1.2) < 0.2         # duration preserved (audio stays in sync)
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")

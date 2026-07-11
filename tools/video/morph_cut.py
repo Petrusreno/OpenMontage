@@ -323,8 +323,8 @@ class MorphCut(BaseTool):
                 return 0.0
             try:
                 arrs = [np.asarray(Image.open(f).convert("RGB")).astype(np.float64) for f in frames]
+                return float(max(np.abs(arrs[i + 1] - arrs[i]).mean() for i in range(len(arrs) - 1)))
             except (OSError, ValueError):
-                return 0.0            # corrupt/unreadable frame -> fail closed, never a traceback
-            return float(max(np.abs(arrs[i + 1] - arrs[i]).mean() for i in range(len(arrs) - 1)))
+                return 0.0            # corrupt/mismatched frame -> fail closed, never a traceback
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
