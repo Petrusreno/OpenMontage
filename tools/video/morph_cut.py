@@ -57,11 +57,25 @@ class MorphCut(BaseTool):
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         return ToolResult(success=False, error="not implemented")
 
-    def _plan_windows(self, cut_seconds, duration: float, transition_duration: float):
+    def _plan_windows(self, cut_seconds: list[float], duration: float,
+                      transition_duration: float) -> tuple[list[dict], list[dict]]:
+        # Invariant: `cursor` and `prev_morph_end` are updated together ONLY on
+        # acceptance (never on a skip), so they stay equal — this is what guarantees
+        # the emitted segments tile [0, duration] contiguously with no gaps/overlaps.
         half = transition_duration / 2.0
-        cuts = sorted({round(float(c), 6) for c in cut_seconds})
         segments: list[dict] = []
         skipped: list[dict] = []
+        # Dedup while recording each dropped duplicate (never silently discarded).
+        seen: set[float] = set()
+        cuts: list[float] = []
+        for c in cut_seconds:
+            r = round(float(c), 6)
+            if r in seen:
+                skipped.append({"time": r, "reason": "duplicate cut time"})
+                continue
+            seen.add(r)
+            cuts.append(r)
+        cuts.sort()
         cursor = 0.0            # end of the last emitted segment
         prev_morph_end = 0.0    # end of the last morph window (for overlap detection)
         for cut in cuts:

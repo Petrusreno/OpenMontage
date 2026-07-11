@@ -63,6 +63,15 @@ def test_plan_windows_skips_degenerate_window():
     assert all(s["kind"] == "pass" for s in segs)
 
 
+def test_plan_windows_records_duplicate_cut():
+    tool = MorphCut()
+    segs, skipped = tool._plan_windows([1.0, 1.0], duration=3.0, transition_duration=0.2)
+    # one morph emitted; the duplicate is recorded, not silently dropped
+    assert [s["cut"] for s in segs if s["kind"] == "morph"] == [1.0]
+    assert any(sk["reason"] == "duplicate cut time" and abs(sk["time"] - 1.0) < 1e-9
+               for sk in skipped)
+
+
 def test_plan_windows_skips_overlapping_cut():
     tool = MorphCut()
     segs, skipped = tool._plan_windows([1.0, 1.1], duration=3.0, transition_duration=0.2)
