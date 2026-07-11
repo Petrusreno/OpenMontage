@@ -14,6 +14,7 @@ import json
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -62,8 +63,118 @@ class MorphCut(BaseTool):
         },
     }
 
+    SMOOTH_RATIO = 0.9
+
+    def _mux_audio(self, video_only, original, dest) -> str | None:
+        dest = Path(dest)
+        try:
+            self._run(["ffmpeg", "-y", "-v", "error", "-i", str(video_only), "-i", str(original),
+                       "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac",
+                       "-shortest", str(dest)])
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            return None
+        return str(dest) if dest.is_file() and dest.stat().st_size > 0 else None
+
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
-        return ToolResult(success=False, error="not implemented")
+        start = time.time()
+        input_path = inputs.get("input_path")
+        cut_seconds = inputs.get("cut_seconds") or []
+        if not input_path or not cut_seconds:
+            return ToolResult(success=False, error="input_path and a non-empty cut_seconds are required.")
+        try:
+            transition = float(inputs.get("transition_duration", 0.2))
+            morph_fps = int(inputs.get("morph_fps", 60))
+            crf = int(inputs.get("crf", 18))
+            cuts = [float(c) for c in cut_seconds]
+        except (TypeError, ValueError):
+            return ToolResult(success=False, error="cut_seconds/transition_duration/morph_fps/crf must be numeric.")
+        if transition < 0.04 or morph_fps < 30:
+            return ToolResult(success=False, error="transition_duration must be >= 0.04 and morph_fps >= 30.")
+        codec = str(inputs.get("codec", "libx264"))
+        input_path = Path(input_path)
+        if not input_path.is_file():
+            return ToolResult(success=False, error=f"Input not found: {input_path}")
+
+        duration = self._duration(str(input_path))
+        if duration <= 0:
+            return ToolResult(success=False, error="Could not read input duration.")
+        # Uniform output fps for every segment so the concat is clean. It must be
+        # >= morph_fps, otherwise the morph window's trailing `fps=out_fps` resample
+        # discards the interpolated frames and the junction is never smoothed (the
+        # motion-compensated frames only survive at the higher rate). Passthrough
+        # segments are resampled up to match; duration is preserved throughout.
+        out_fps = max(self._probe_fps(str(input_path)), float(morph_fps))
+        out_path = Path(inputs.get("output_path") or
+                        input_path.with_name(f"{input_path.stem}_morphed.mp4"))
+
+        segments, skipped = self._plan_windows(cuts, duration, transition)
+        morph_cuts = [s for s in segments if s["kind"] == "morph"]
+        if not morph_cuts:
+            return ToolResult(success=False,
+                              error="No usable cuts to smooth (all skipped at boundaries/overlaps).")
+
+        workdir = Path(tempfile.mkdtemp(prefix="morphcut_"))
+        try:
+            # Measure BEFORE at each morph cut (on the original).
+            radius = transition
+            before = {s["cut"]: self._junction_max_mad(str(input_path), s["cut"], radius)
+                      for s in morph_cuts}
+
+            parts: list[str] = []
+            for i, seg in enumerate(segments):
+                dest = workdir / f"seg_{i:04d}.mp4"
+                if seg["kind"] == "morph":
+                    out = self._morph_window(str(input_path), seg["start"], seg["end"],
+                                             morph_fps, out_fps, codec, crf, dest)
+                else:
+                    out = self._extract_segment(str(input_path), seg["start"], seg["end"],
+                                                out_fps, codec, crf, dest)
+                if out is None:
+                    return ToolResult(success=False, error=f"Failed to build segment {i} ({seg['kind']}).")
+                parts.append(out)
+
+            video_only = self._concat(parts, workdir / "concat.mp4")
+            if video_only is None:
+                return ToolResult(success=False, error="Concat of morphed/passthrough segments failed.")
+
+            if self._has_audio(str(input_path)):
+                final = self._mux_audio(video_only, str(input_path), out_path)
+                if final is None:
+                    return ToolResult(success=False, error="Audio mux failed.")
+            else:
+                shutil.copyfile(video_only, out_path)
+            if not out_path.is_file() or out_path.stat().st_size == 0:
+                return ToolResult(success=False, error="Output not created or empty.")
+
+            # Measure AFTER at each cut (on the OUTPUT) — honest, re-probed, never modeled.
+            per_cut = []
+            for s in morph_cuts:
+                mad_before = round(before[s["cut"]], 4)
+                mad_after = round(self._junction_max_mad(str(out_path), s["cut"], radius), 4)
+                per_cut.append({
+                    "time": s["cut"],
+                    "max_mad_before": mad_before,
+                    "max_mad_after": mad_after,
+                    "smoothed": mad_after < mad_before * self.SMOOTH_RATIO,
+                })
+            smoothed_count = sum(1 for c in per_cut if c["smoothed"])
+
+            return ToolResult(
+                success=True,
+                artifacts=[str(out_path)],
+                duration_seconds=time.time() - start,
+                data={
+                    "cuts_requested": len(cuts),
+                    "cuts_processed": len(morph_cuts),
+                    "per_cut": per_cut,
+                    "smoothed_count": smoothed_count,
+                    "skipped_cuts": skipped,
+                    "transition_duration": transition,
+                    "morph_fps": morph_fps,
+                },
+            )
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
 
     def _plan_windows(self, cut_seconds: list[float], duration: float,
                       transition_duration: float) -> tuple[list[dict], list[dict]]:
@@ -155,8 +266,13 @@ class MorphCut(BaseTool):
     def _morph_window(self, input_path: str, start: float, end: float, morph_fps: int,
                       out_fps: float, codec: str, crf: int, dest: str | Path) -> str | None:
         dest = Path(dest)
-        vf = (f"minterpolate=fps={morph_fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,"
-              f"fps={out_fps}")
+        # scd=fdiff scene-change detection makes minterpolate DEGRADE HONESTLY: when the
+        # content change across the junction is large enough that motion compensation cannot
+        # bridge it, the frame is held (hard cut preserved) instead of cross-dissolved into a
+        # fake-smooth blend — so _junction_max_mad on the output truthfully reports it as not
+        # smoothed. Small, bridgeable jumps fall below the threshold and are interpolated.
+        vf = (f"minterpolate=fps={morph_fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1:"
+              f"scd=fdiff:scd_threshold=3,fps={out_fps}")
         try:
             self._run(["ffmpeg", "-y", "-v", "error", "-ss", f"{float(start):.3f}",
                        "-to", f"{float(end):.3f}", "-i", str(input_path), "-vf", vf,

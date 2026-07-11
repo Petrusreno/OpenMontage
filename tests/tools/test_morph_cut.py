@@ -155,3 +155,57 @@ def test_concat_handles_path_with_apostrophe(tmp_path):
     assert p1 and p2 and "o'brien" in p1
     out = tool._concat([p1, p2], workdir / "out.mp4")
     assert out and Path(out).exists() and Path(out).stat().st_size > 0
+
+
+SMOOTH_ANCHOR_NOTE = "e2e honesty anchor"
+
+
+def test_execute_requires_cuts(tmp_path):
+    result = MorphCut().execute({"input_path": str(tmp_path / "a.mp4"), "cut_seconds": []})
+    assert not result.success
+
+
+def test_execute_rejects_non_numeric_transition(tmp_path):
+    result = MorphCut().execute({"input_path": str(tmp_path / "a.mp4"), "cut_seconds": [1.0],
+                                 "transition_duration": "x"})
+    assert not result.success
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_smooths_small_jump(tmp_path):
+    clip = tmp_path / "c.mp4"
+    _make_jump_clip(clip, 40, 52)                       # small 12px jump at t=0.6
+    out = tmp_path / "smoothed.mp4"
+    result = MorphCut().execute({
+        "input_path": str(clip), "cut_seconds": [0.6], "output_path": str(out)})
+    assert result.success, result.error
+    assert out.exists() and out.stat().st_size > 0
+    assert abs(result.data["per_cut"][0]["time"] - 0.6) < 1e-9
+    assert result.data["per_cut"][0]["max_mad_after"] < result.data["per_cut"][0]["max_mad_before"]
+    assert result.data["per_cut"][0]["smoothed"] is True
+    assert result.data["smoothed_count"] == 1
+    assert abs(MorphCut()._duration(str(out)) - 1.2) < 0.2      # duration preserved
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_degrades_honestly_on_large_jump(tmp_path):
+    clip = tmp_path / "c.mp4"
+    _make_jump_clip(clip, 10, 110)                      # huge 100px jump: minterpolate can't bridge
+    out = tmp_path / "o.mp4"
+    result = MorphCut().execute({
+        "input_path": str(clip), "cut_seconds": [0.6], "output_path": str(out)})
+    assert result.success, result.error                # still succeeds (video produced)
+    assert out.exists()
+    assert result.data["per_cut"][0]["smoothed"] is False   # reported, not faked
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_is_deterministic(tmp_path):
+    clip = tmp_path / "c.mp4"
+    _make_jump_clip(clip, 40, 52)
+    r1 = MorphCut().execute({"input_path": str(clip), "cut_seconds": [0.6],
+                             "output_path": str(tmp_path / "o1.mp4")})
+    r2 = MorphCut().execute({"input_path": str(clip), "cut_seconds": [0.6],
+                             "output_path": str(tmp_path / "o2.mp4")})
+    assert [c["time"] for c in r1.data["per_cut"]] == [c["time"] for c in r2.data["per_cut"]]
+    assert r1.data["cuts_processed"] == r2.data["cuts_processed"]
