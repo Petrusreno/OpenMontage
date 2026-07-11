@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from tools.base_tool import (
     BaseTool,
@@ -100,6 +103,67 @@ class VoiceIsolation(BaseTool):
         return (f"asplit=2[a][b];[a]{chain}[w];"
                 f"[w]volume={mix}[wv];[b]volume={1.0 - mix}[dv];"
                 f"[wv][dv]amix=inputs=2:normalize=0")
+
+    def _ffprobe_has(self, path: str, stream: str) -> bool:
+        try:
+            proc = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", stream,
+                 "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
+                capture_output=True, text=True, check=False, timeout=30)
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+        return bool(proc.stdout.strip())
+
+    def _has_audio(self, path: str) -> bool:
+        return self._ffprobe_has(path, "a")
+
+    def _has_video(self, path: str) -> bool:
+        return self._ffprobe_has(path, "v")
+
+    def _process(self, input_path: str, af: str, codec: str, bitrate: str,
+                 dest: str | Path) -> str | None:
+        dest = Path(dest)
+        try:
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(input_path),
+                            "-af", af, "-c:a", codec, "-b:a", bitrate, str(dest)],
+                           capture_output=True, check=True, timeout=600)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            return None
+        return str(dest) if dest.is_file() and dest.stat().st_size > 0 else None
+
+    def _mux_audio(self, video_in: str, new_audio: str, codec: str, bitrate: str,
+                   dest: str | Path) -> str | None:
+        dest = Path(dest)
+        try:
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(video_in), "-i", str(new_audio),
+                            "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy",
+                            "-c:a", codec, "-b:a", bitrate, "-shortest", str(dest)],
+                           capture_output=True, check=True, timeout=600)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            return None
+        return str(dest) if dest.is_file() and dest.stat().st_size > 0 else None
+
+    def _noise_floor_dbfs(self, path: str, window_s: float = 0.2) -> float:
+        try:
+            proc = subprocess.run(
+                ["ffmpeg", "-v", "quiet", "-i", str(path),
+                 "-f", "s16le", "-ac", "1", "-ar", "48000", "pipe:1"],
+                capture_output=True, check=True, timeout=120)   # BYTES, not text
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            return 0.0
+        raw = proc.stdout
+        raw = raw[: len(raw) - (len(raw) % 2)]
+        if not raw:
+            return 0.0
+        x = np.frombuffer(raw, dtype="<i2").astype(np.float64) / 32768.0
+        n = int(window_s * 48000)
+        if n <= 0 or x.size < n:
+            return 0.0
+        mins = []
+        for i in range(0, x.size - n, n):
+            rms = float(np.sqrt(np.mean(x[i:i + n] ** 2))) + 1e-12
+            mins.append(20.0 * np.log10(rms))
+        return round(min(mins), 2) if mins else 0.0
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         return ToolResult(success=False, error="not implemented")
