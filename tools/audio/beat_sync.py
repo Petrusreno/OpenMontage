@@ -41,6 +41,8 @@ class BeatSync(BaseTool):
 
     capabilities = ["beat_sync", "beat_detection", "onset_detection"]
 
+    idempotency_key_fields = ["input_path", "sample_rate", "sensitivity", "min_gap_seconds"]
+
     input_schema = {
         "type": "object",
         "required": ["input_path"],
@@ -48,7 +50,7 @@ class BeatSync(BaseTool):
             "input_path": {"type": "string"},
             "cut_seconds": {"type": "array", "items": {"type": "number", "minimum": 0}},
             "output_path": {"type": "string"},
-            "sample_rate": {"type": "integer", "default": 22050, "minimum": 8000},
+            "sample_rate": {"type": "integer", "default": 22050, "minimum": 8000, "maximum": 192000},
             "sensitivity": {"type": "number", "default": 1.0, "minimum": 0.0},
             "min_gap_seconds": {"type": "number", "default": 0.15, "minimum": 0.02},
         },
@@ -67,9 +69,10 @@ class BeatSync(BaseTool):
         except (TypeError, ValueError):
             return ToolResult(success=False,
                               error="sample_rate/sensitivity/min_gap_seconds/cut_seconds must be numeric.")
-        if sample_rate < 8000 or sensitivity < 0 or min_gap < 0.02:
+        if not 8000 <= sample_rate <= 192000 or sensitivity < 0 or min_gap < 0.02:
             return ToolResult(success=False,
-                              error="sample_rate >= 8000, sensitivity >= 0, min_gap_seconds >= 0.02.")
+                              error="sample_rate in [8000, 192000], sensitivity >= 0, "
+                                    "min_gap_seconds >= 0.02.")
         input_path = Path(input_path)
         if not input_path.is_file():
             return ToolResult(success=False, error=f"Input not found: {input_path}")
@@ -153,6 +156,11 @@ class BeatSync(BaseTool):
             diff[diff < 0] = 0.0
             flux[i] = diff.sum()
             prev = mag
+        # Frame 0 is diffed against silence, so its flux is a spurious onset (the whole
+        # spectrum). Zero it so a quiet intro doesn't inflate the threshold and suppress
+        # real beats.
+        if flux.size:
+            flux[0] = 0.0
         std = flux.std()
         flux = (flux - flux.mean()) / (std + 1e-9)
         return flux, float(sample_rate) / hop

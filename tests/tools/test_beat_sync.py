@@ -178,6 +178,11 @@ def test_execute_rejects_non_numeric_cut_seconds(tmp_path):
     assert not r.success              # bad param -> clean failure, not a traceback
 
 
+def test_execute_rejects_out_of_range_sample_rate(tmp_path):
+    r = BeatSync().execute({"input_path": str(tmp_path / "a.wav"), "sample_rate": 10_000_000})
+    assert not r.success and "sample_rate" in (r.error or "")
+
+
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
 def test_execute_bad_output_dir_fails_cleanly(tmp_path):
     # beats detect fine, but an unwritable output_path must return success=False, not raise.
