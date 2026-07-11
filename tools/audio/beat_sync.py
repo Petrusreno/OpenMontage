@@ -87,8 +87,7 @@ class BeatSync(BaseTool):
         bpm = self._estimate_bpm(beats)
         snapped = self._snap(cuts, beats)
 
-        report = {
-            "version": "1.0",
+        payload = {
             "bpm": bpm,
             "beat_count": len(beats),
             "beats": beats,
@@ -99,21 +98,18 @@ class BeatSync(BaseTool):
         }
         out_path = Path(inputs.get("output_path") or
                         input_path.with_name(f"{input_path.stem}_beats.json"))
-        out_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        try:
+            # "version" is the report-schema version (not the tool version).
+            out_path.write_text(json.dumps({"version": "1.0", **payload},
+                                           ensure_ascii=False, indent=2, sort_keys=True))
+        except OSError as exc:
+            return ToolResult(success=False, error=f"Failed to write report: {exc}")
 
         return ToolResult(
             success=True,
             artifacts=[str(out_path)],
             duration_seconds=time.time() - start,
-            data={
-                "bpm": bpm,
-                "beat_count": len(beats),
-                "beats": beats,
-                "snapped_cuts": snapped,
-                "sample_rate": sample_rate,
-                "sensitivity": sensitivity,
-                "min_gap_seconds": min_gap,
-            },
+            data=payload,
         )
 
     def _has_audio(self, path: str) -> bool:

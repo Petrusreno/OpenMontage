@@ -171,3 +171,17 @@ def test_execute_is_deterministic(tmp_path):
     BeatSync().execute({"input_path": str(clip), "output_path": str(o1)})
     BeatSync().execute({"input_path": str(clip), "output_path": str(o2)})
     assert o1.read_text() == o2.read_text()
+
+
+def test_execute_rejects_non_numeric_cut_seconds(tmp_path):
+    r = BeatSync().execute({"input_path": str(tmp_path / "a.wav"), "cut_seconds": ["x"]})
+    assert not r.success              # bad param -> clean failure, not a traceback
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_bad_output_dir_fails_cleanly(tmp_path):
+    # beats detect fine, but an unwritable output_path must return success=False, not raise.
+    clip = tmp_path / "c.wav"; _make_click_wav(clip, bpm=120)
+    r = BeatSync().execute({"input_path": str(clip),
+                            "output_path": "/no/such/dir/out.json"})
+    assert not r.success and "write" in (r.error or "").lower()
