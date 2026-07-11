@@ -11,6 +11,7 @@ jump cuts; morph_cut smooths them.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -140,7 +141,8 @@ class MorphCut(BaseTool):
             return False
         return bool(proc.stdout.strip())
 
-    def _extract_segment(self, input_path, start, end, out_fps, codec, crf, dest) -> str | None:
+    def _extract_segment(self, input_path: str, start: float, end: float, out_fps: float,
+                         codec: str, crf: int, dest: str | Path) -> str | None:
         dest = Path(dest)
         try:
             self._run(["ffmpeg", "-y", "-v", "error", "-ss", f"{float(start):.3f}",
@@ -150,7 +152,8 @@ class MorphCut(BaseTool):
             return None
         return str(dest) if dest.is_file() and dest.stat().st_size > 0 else None
 
-    def _morph_window(self, input_path, start, end, morph_fps, out_fps, codec, crf, dest) -> str | None:
+    def _morph_window(self, input_path: str, start: float, end: float, morph_fps: int,
+                      out_fps: float, codec: str, crf: int, dest: str | Path) -> str | None:
         dest = Path(dest)
         vf = (f"minterpolate=fps={morph_fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,"
               f"fps={out_fps}")
@@ -162,10 +165,14 @@ class MorphCut(BaseTool):
             return None
         return str(dest) if dest.is_file() and dest.stat().st_size > 0 else None
 
-    def _concat(self, parts, dest) -> str | None:
+    def _concat(self, parts: list[str], dest: str | Path) -> str | None:
         dest = Path(dest)
         list_path = dest.parent / f"{dest.stem}_concat.txt"
-        list_path.write_text("".join(f"file '{Path(p).resolve()}'\n" for p in parts))
+        # Escape single quotes for the concat-demuxer list format ('\'' inside a quoted path),
+        # so a path containing an apostrophe doesn't silently break the join.
+        def _q(p: str) -> str:
+            return str(Path(p).resolve()).replace("'", "'\\''")
+        list_path.write_text("".join(f"file '{_q(p)}'\n" for p in parts))
         try:
             self._run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
                        "-i", str(list_path), "-c", "copy", str(dest)])
@@ -173,7 +180,7 @@ class MorphCut(BaseTool):
             return None
         return str(dest) if dest.is_file() and dest.stat().st_size > 0 else None
 
-    def _junction_max_mad(self, video_path, at_seconds, radius) -> float:
+    def _junction_max_mad(self, video_path: str, at_seconds: float, radius: float) -> float:
         workdir = Path(tempfile.mkdtemp(prefix="mad_"))
         try:
             start = max(0.0, float(at_seconds) - float(radius))
@@ -190,5 +197,4 @@ class MorphCut(BaseTool):
             arrs = [np.asarray(Image.open(f).convert("RGB")).astype(np.float64) for f in frames]
             return float(max(np.abs(arrs[i + 1] - arrs[i]).mean() for i in range(len(arrs) - 1)))
         finally:
-            import shutil
             shutil.rmtree(workdir, ignore_errors=True)
