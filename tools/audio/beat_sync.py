@@ -53,7 +53,8 @@ class BeatSync(BaseTool):
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         return ToolResult(success=False, error="not implemented")
 
-    def _onset_envelope(self, x, sample_rate: int, win: int = 1024, hop: int = 512):
+    def _onset_envelope(self, x: "np.ndarray", sample_rate: int, win: int = 1024,
+                        hop: int = 512) -> "tuple[np.ndarray, float]":
         x = np.asarray(x, dtype=np.float64)
         if x.size < win:
             return np.zeros(0), float(sample_rate) / hop
@@ -95,7 +96,7 @@ class BeatSync(BaseTool):
         med = float(np.median(ibi))
         return round(60.0 / med, 1) if med > 0 else 0.0
 
-    def _snap(self, cut_seconds: list[float], beats: list[float]) -> list[dict]:
+    def _snap(self, cut_seconds: list[float], beats: list[float]) -> list[dict[str, float]]:
         if not cut_seconds or not beats:
             return []
         b = np.asarray(beats, dtype=np.float64)
