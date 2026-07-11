@@ -106,6 +106,20 @@ class VoiceIsolation(BaseTool):
                 f"[w]volume={mix}[wv];[b]volume={1.0 - mix}[dv];"
                 f"[wv][dv]amix=inputs=2:normalize=0")
 
+    @staticmethod
+    def _audio_ext(codec: str) -> str:
+        # Container extension matching the audio codec, so the output name isn't misleading.
+        c = (codec or "").lower()
+        if c.startswith("pcm"):
+            return "wav"
+        if c in ("libmp3lame", "mp3"):
+            return "mp3"
+        if c == "flac":
+            return "flac"
+        if c in ("libopus", "opus", "libvorbis", "vorbis"):
+            return "ogg"
+        return "m4a"          # aac and anything else -> m4a container
+
     def _ffprobe_has(self, path: str, stream: str) -> bool:
         try:
             proc = subprocess.run(
@@ -208,16 +222,19 @@ class VoiceIsolation(BaseTool):
             return ToolResult(success=False, error="Input has no audio stream to isolate.")
 
         had_video = self._has_video(str(input_path))
+        audio_ext = self._audio_ext(codec)
+        default_ext = "mp4" if had_video else audio_ext
         out_path = Path(inputs.get("output_path") or
-                        input_path.with_name(f"{input_path.stem}_voice.{'mp4' if had_video else 'wav'}"))
+                        input_path.with_name(f"{input_path.stem}_voice.{default_ext}"))
 
         af = self._build_filter(engine, model, nf, mix)
         workdir = Path(tempfile.mkdtemp(prefix="voiceiso_"))
         try:
             floor_before = self._noise_floor_dbfs(str(input_path))
 
-            audio_out = self._process(str(input_path), af, codec, bitrate, workdir / "clean.wav"
-                                      if not had_video else workdir / "clean.m4a")
+            # Intermediate container extension must match the codec so ffmpeg muxes it.
+            audio_out = self._process(str(input_path), af, codec, bitrate,
+                                      workdir / f"clean.{'m4a' if had_video else audio_ext}")
             if audio_out is None:
                 return ToolResult(success=False, error="Voice-isolation filter chain failed.")
 

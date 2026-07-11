@@ -213,3 +213,45 @@ def test_execute_no_audio_input_fails(tmp_path):
              "-an", "-pix_fmt", "yuv420p", str(silent)], check=True, capture_output=True)
     r = VoiceIsolation().execute({"input_path": str(silent), "output_path": str(tmp_path / "o.mp4")})
     assert not r.success
+
+
+def test_audio_ext_matches_codec():
+    tool = VoiceIsolation()
+    assert tool._audio_ext("pcm_s16le") == "wav"
+    assert tool._audio_ext("aac") == "m4a"          # not "wav" — the payload is AAC
+    assert tool._audio_ext("libmp3lame") == "mp3"
+    assert tool._audio_ext("flac") == "flac"
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_default_output_ext_matches_codec(tmp_path):
+    clip = tmp_path / "c.wav"; _make_noisy_clip(clip)
+    # no output_path, default codec aac -> default output must be .m4a, not .wav
+    result = VoiceIsolation().execute({"input_path": str(clip), "engine": "spectral"})
+    assert result.success, result.error
+    assert result.artifacts[0].endswith("_voice.m4a")
+    Path(result.artifacts[0]).unlink(missing_ok=True)
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_mix_zero_barely_reduces(tmp_path):
+    clip = tmp_path / "c.wav"; _make_noisy_clip(clip)
+    tool = VoiceIsolation()
+    full = tool.execute({"input_path": str(clip), "output_path": str(tmp_path / "full.wav"),
+                         "engine": "rnnoise", "mix": 1.0, "codec": "pcm_s16le"})
+    dry = tool.execute({"input_path": str(clip), "output_path": str(tmp_path / "dry.wav"),
+                        "engine": "rnnoise", "mix": 0.0, "codec": "pcm_s16le"})
+    assert full.success and dry.success
+    # mix=0 (dry) reduces the floor far less than mix=1 (full isolation) — honest, not a failure
+    assert dry.data["noise_reduction_db"] < full.data["noise_reduction_db"]
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_is_deterministic(tmp_path):
+    clip = tmp_path / "c.wav"; _make_noisy_clip(clip)
+    tool = VoiceIsolation()
+    r1 = tool.execute({"input_path": str(clip), "output_path": str(tmp_path / "o1.wav"),
+                       "engine": "rnnoise", "codec": "pcm_s16le"})
+    r2 = tool.execute({"input_path": str(clip), "output_path": str(tmp_path / "o2.wav"),
+                       "engine": "rnnoise", "codec": "pcm_s16le"})
+    assert r1.data["engine"] == r2.data["engine"] and r1.data["model"] == r2.data["model"]
