@@ -77,9 +77,19 @@ class VoiceIsolation(BaseTool):
             self._arnndn_cache = cached
         return cached
 
+    @staticmethod
+    def _escape_filter_path(p: str) -> str:
+        # Escape ffmpeg filtergraph metacharacters so a model path with ':' (Windows
+        # drives), ',', '[', ']', "'", ';' or '\' can't break or inject into the graph.
+        # Backslash first so the escapes we add aren't themselves re-escaped.
+        for ch in ("\\", ":", "'", ",", "[", "]", ";"):
+            p = p.replace(ch, "\\" + ch)
+        return p
+
     def _base_chain(self, engine: str, model: str | None, nf: float) -> str:
         if engine == "rnnoise":
-            return f"arnndn=model={model},highpass=f=80,loudnorm=I=-16:LRA=11:TP=-1.5"
+            safe = self._escape_filter_path(str(model))
+            return f"arnndn=model={safe},highpass=f=80,loudnorm=I=-16:LRA=11:TP=-1.5"
         return (f"afftdn=nf={nf}:nt=w,anlmdn,highpass=f=80,deesser,"
                 f"loudnorm=I=-16:LRA=11:TP=-1.5")
 

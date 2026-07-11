@@ -43,6 +43,27 @@ def test_build_filter_rnnoise_and_spectral():
 
 def test_build_filter_mix_blend():
     tool = VoiceIsolation()
-    m = tool._build_filter("rnnoise", "/m.rnnn", nf=-25, mix=0.5)
+    # asymmetric mix so wet (0.3) and dry (0.7) are distinct substrings
+    m = tool._build_filter("rnnoise", "/m.rnnn", nf=-25, mix=0.3)
     assert "asplit=2" in m and "amix=inputs=2:normalize=0" in m
-    assert "volume=0.5" in m and "volume=0.5" in m       # wet + dry both scaled
+    assert "volume=0.3" in m           # wet scaled by mix
+    assert "volume=0.7" in m           # dry scaled by 1-mix
+
+
+def test_build_filter_escapes_model_path():
+    tool = VoiceIsolation()
+    # a Windows-style / metachar-laden path must not break or inject into the graph
+    r = tool._build_filter("rnnoise", "C:/a,b/model.rnnn", nf=-25, mix=1.0)
+    assert r.startswith("arnndn=model=")
+    assert "C\\:/a\\,b/model.rnnn" in r               # ':' and ',' escaped (\: and \,)
+    assert r.count("arnndn") == 1                     # no injected extra filter nodes
+
+
+def test_arnndn_available_guards_subprocess_error(monkeypatch):
+    tool = VoiceIsolation()
+
+    def _boom(*a, **k):
+        raise OSError("ffmpeg missing")
+
+    monkeypatch.setattr("tools.audio.voice_isolation.subprocess.run", _boom)
+    assert tool._arnndn_available() is False          # guarded -> False, not a traceback
