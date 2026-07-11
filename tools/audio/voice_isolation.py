@@ -160,7 +160,7 @@ class VoiceIsolation(BaseTool):
         if n <= 0 or x.size < n:
             return 0.0
         mins = []
-        for i in range(0, x.size - n, n):
+        for i in range(0, x.size - n + 1, n):   # +1 so the final full window is included
             rms = float(np.sqrt(np.mean(x[i:i + n] ** 2))) + 1e-12
             mins.append(20.0 * np.log10(rms))
         return round(min(mins), 2) if mins else 0.0

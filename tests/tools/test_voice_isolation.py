@@ -116,6 +116,19 @@ def test_noise_floor_dbfs_reflects_quiet_window(tmp_path):
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_noise_floor_single_window_not_fabricated(tmp_path):
+    # A clip barely longer than one window must return a real floor, not the 0.0
+    # failure sentinel (regression for the range(...-n) off-by-one that dropped the
+    # last window and returned 0.0 on valid short audio).
+    clip = tmp_path / "short.wav"
+    _sp.run(["ffmpeg", "-y", "-v", "quiet", "-f", "lavfi",
+             "-i", "sine=frequency=300:duration=0.25:sample_rate=48000", str(clip)],
+            check=True, capture_output=True)
+    floor = VoiceIsolation()._noise_floor_dbfs(str(clip), window_s=0.2)
+    assert floor != 0.0 and floor < -1.0     # a real dBFS, not the fabricated/empty sentinel
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
 def test_process_runs_rnnoise_chain(tmp_path):
     clip = tmp_path / "c.wav"; _make_noisy_clip(clip)
     tool = VoiceIsolation()
