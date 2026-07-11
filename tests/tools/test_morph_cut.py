@@ -171,6 +171,15 @@ def test_execute_rejects_non_numeric_transition(tmp_path):
     assert not result.success
 
 
+def test_scd_threshold_is_exposed_and_validated(tmp_path):
+    # scd_threshold is a real schema param (not a hardcoded magic number) and is
+    # boundary-validated like the other numeric inputs.
+    assert "scd_threshold" in MorphCut().input_schema["properties"]
+    bad = MorphCut().execute({"input_path": str(tmp_path / "a.mp4"), "cut_seconds": [1.0],
+                              "scd_threshold": "x"})
+    assert not bad.success
+
+
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
 def test_execute_smooths_small_jump(tmp_path):
     clip = tmp_path / "c.mp4"

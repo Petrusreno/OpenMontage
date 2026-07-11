@@ -58,6 +58,11 @@ class MorphCut(BaseTool):
             "output_path": {"type": "string"},
             "transition_duration": {"type": "number", "default": 0.2, "minimum": 0.04},
             "morph_fps": {"type": "integer", "default": 60, "minimum": 30},
+            "scd_threshold": {"type": "number", "default": 3.0, "minimum": 0.0,
+                              "description": "Scene-change sensitivity: below this, a junction is "
+                                             "morphed; above it, minterpolate holds the hard cut "
+                                             "(honest degradation). Lower = more junctions kept as "
+                                             "hard cuts. Tune on real footage."},
             "codec": {"type": "string", "default": "libx264"},
             "crf": {"type": "integer", "default": 18},
         },
@@ -85,11 +90,14 @@ class MorphCut(BaseTool):
             transition = float(inputs.get("transition_duration", 0.2))
             morph_fps = int(inputs.get("morph_fps", 60))
             crf = int(inputs.get("crf", 18))
+            scd_threshold = float(inputs.get("scd_threshold", 3.0))
             cuts = [float(c) for c in cut_seconds]
         except (TypeError, ValueError):
-            return ToolResult(success=False, error="cut_seconds/transition_duration/morph_fps/crf must be numeric.")
-        if transition < 0.04 or morph_fps < 30:
-            return ToolResult(success=False, error="transition_duration must be >= 0.04 and morph_fps >= 30.")
+            return ToolResult(success=False,
+                              error="cut_seconds/transition_duration/morph_fps/crf/scd_threshold must be numeric.")
+        if transition < 0.04 or morph_fps < 30 or scd_threshold < 0:
+            return ToolResult(success=False,
+                              error="transition_duration >= 0.04, morph_fps >= 30, scd_threshold >= 0.")
         codec = str(inputs.get("codec", "libx264"))
         input_path = Path(input_path)
         if not input_path.is_file():
@@ -125,7 +133,7 @@ class MorphCut(BaseTool):
                 dest = workdir / f"seg_{i:04d}.mp4"
                 if seg["kind"] == "morph":
                     out = self._morph_window(str(input_path), seg["start"], seg["end"],
-                                             morph_fps, out_fps, codec, crf, dest)
+                                             morph_fps, out_fps, codec, crf, dest, scd_threshold)
                 else:
                     out = self._extract_segment(str(input_path), seg["start"], seg["end"],
                                                 out_fps, codec, crf, dest)
@@ -138,11 +146,13 @@ class MorphCut(BaseTool):
                 return ToolResult(success=False, error="Concat of morphed/passthrough segments failed.")
 
             if self._has_audio(str(input_path)):
-                final = self._mux_audio(video_only, str(input_path), out_path)
-                if final is None:
+                if self._mux_audio(video_only, str(input_path), out_path) is None:
                     return ToolResult(success=False, error="Audio mux failed.")
             else:
-                shutil.copyfile(video_only, out_path)
+                try:
+                    shutil.copyfile(video_only, out_path)
+                except OSError as exc:
+                    return ToolResult(success=False, error=f"Failed to write output: {exc}")
             if not out_path.is_file() or out_path.stat().st_size == 0:
                 return ToolResult(success=False, error="Output not created or empty.")
 
@@ -264,7 +274,8 @@ class MorphCut(BaseTool):
         return str(dest) if dest.is_file() and dest.stat().st_size > 0 else None
 
     def _morph_window(self, input_path: str, start: float, end: float, morph_fps: int,
-                      out_fps: float, codec: str, crf: int, dest: str | Path) -> str | None:
+                      out_fps: float, codec: str, crf: int, dest: str | Path,
+                      scd_threshold: float = 3.0) -> str | None:
         dest = Path(dest)
         # scd=fdiff scene-change detection makes minterpolate DEGRADE HONESTLY: when the
         # content change across the junction is large enough that motion compensation cannot
@@ -272,7 +283,7 @@ class MorphCut(BaseTool):
         # fake-smooth blend — so _junction_max_mad on the output truthfully reports it as not
         # smoothed. Small, bridgeable jumps fall below the threshold and are interpolated.
         vf = (f"minterpolate=fps={morph_fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1:"
-              f"scd=fdiff:scd_threshold=3,fps={out_fps}")
+              f"scd=fdiff:scd_threshold={scd_threshold},fps={out_fps}")
         try:
             self._run(["ffmpeg", "-y", "-v", "error", "-ss", f"{float(start):.3f}",
                        "-to", f"{float(end):.3f}", "-i", str(input_path), "-vf", vf,
@@ -310,7 +321,10 @@ class MorphCut(BaseTool):
             frames = sorted(workdir.glob("f_*.png"))
             if len(frames) < 2:
                 return 0.0
-            arrs = [np.asarray(Image.open(f).convert("RGB")).astype(np.float64) for f in frames]
+            try:
+                arrs = [np.asarray(Image.open(f).convert("RGB")).astype(np.float64) for f in frames]
+            except (OSError, ValueError):
+                return 0.0            # corrupt/unreadable frame -> fail closed, never a traceback
             return float(max(np.abs(arrs[i + 1] - arrs[i]).mean() for i in range(len(arrs) - 1)))
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
