@@ -8,6 +8,8 @@ blends the isolated voice with the original. For a video input, the cleaned audi
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +56,40 @@ class VoiceIsolation(BaseTool):
             "bitrate": {"type": "string", "default": "192k"},
         },
     }
+
+    def _resolve_model(self, model_path: str | None) -> str | None:
+        if model_path:
+            return model_path if Path(model_path).is_file() else None
+        env = os.environ.get("RNNOISE_MODEL")
+        if env and Path(env).is_file():
+            return env
+        return self.BUNDLED_MODEL if Path(self.BUNDLED_MODEL).is_file() else None
+
+    def _arnndn_available(self) -> bool:
+        cached = getattr(self, "_arnndn_cache", None)
+        if cached is None:
+            try:
+                proc = subprocess.run(["ffmpeg", "-hide_banner", "-filters"],
+                                      capture_output=True, text=True, check=False, timeout=30)
+                cached = "arnndn" in (proc.stdout + proc.stderr)
+            except (subprocess.TimeoutExpired, OSError):
+                cached = False
+            self._arnndn_cache = cached
+        return cached
+
+    def _base_chain(self, engine: str, model: str | None, nf: float) -> str:
+        if engine == "rnnoise":
+            return f"arnndn=model={model},highpass=f=80,loudnorm=I=-16:LRA=11:TP=-1.5"
+        return (f"afftdn=nf={nf}:nt=w,anlmdn,highpass=f=80,deesser,"
+                f"loudnorm=I=-16:LRA=11:TP=-1.5")
+
+    def _build_filter(self, engine: str, model: str | None, nf: float, mix: float) -> str:
+        chain = self._base_chain(engine, model, nf)
+        if mix >= 1.0:
+            return chain
+        return (f"asplit=2[a][b];[a]{chain}[w];"
+                f"[w]volume={mix}[wv];[b]volume={1.0 - mix}[dv];"
+                f"[wv][dv]amix=inputs=2:normalize=0")
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         return ToolResult(success=False, error="not implemented")
