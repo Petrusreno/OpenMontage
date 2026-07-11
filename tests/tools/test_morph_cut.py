@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+import shutil
+import subprocess as _sp
+from pathlib import Path
+
+import numpy as np
+import pytest
+
 from tools.video.morph_cut import MorphCut
 from tools.base_tool import ToolTier
 
@@ -78,3 +85,56 @@ def test_plan_windows_skips_overlapping_cut():
     # windows [0.9,1.1] and [1.0,1.2] overlap -> second skipped
     assert any(abs(sk["time"] - 1.1) < 1e-9 for sk in skipped)
     assert [s["cut"] for s in segs if s["kind"] == "morph"] == [1.0]
+
+
+def _make_jump_clip(path: Path, xa: int, xb: int, fps: int = 30, hold: float = 0.6) -> None:
+    """A gray clip with a white box at xa for `hold`s, hard-cut to the box at xb for `hold`s."""
+    d = path.parent
+    a = d / "ja.png"; b = d / "jb.png"; sa = d / "jsa.mp4"; sb = d / "jsb.mp4"; lst = d / "jl.txt"
+    for png, x in ((a, xa), (b, xb)):
+        _sp.run(["ffmpeg", "-y", "-v", "quiet", "-f", "lavfi", "-i", "color=c=gray:s=128x128:d=0.1",
+                 "-vf", f"drawbox=x={x}:y=48:w=30:h=30:color=white:t=fill", "-frames:v", "1", str(png)],
+                check=True, capture_output=True)
+    for seg, png in ((sa, a), (sb, b)):
+        _sp.run(["ffmpeg", "-y", "-v", "quiet", "-loop", "1", "-i", str(png), "-t", str(hold),
+                 "-r", str(fps), "-pix_fmt", "yuv420p", str(seg)], check=True, capture_output=True)
+    lst.write_text(f"file '{sa.resolve()}'\nfile '{sb.resolve()}'\n")
+    _sp.run(["ffmpeg", "-y", "-v", "quiet", "-f", "concat", "-safe", "0", "-i", str(lst),
+             "-c", "copy", str(path)], check=True, capture_output=True)
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_probe_duration_fps_audio(tmp_path):
+    clip = tmp_path / "c.mp4"
+    _make_jump_clip(clip, 40, 52)
+    tool = MorphCut()
+    assert abs(tool._duration(str(clip)) - 1.2) < 0.15
+    assert abs(tool._probe_fps(str(clip)) - 30.0) < 0.5
+    assert tool._has_audio(str(clip)) is False        # lavfi color source has no audio
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_junction_max_mad_high_on_hard_jump(tmp_path):
+    clip = tmp_path / "c.mp4"
+    _make_jump_clip(clip, 20, 100)                     # big jump at t=0.6
+    mad = MorphCut()._junction_max_mad(str(clip), 0.6, 0.15)
+    assert mad > 5.0                                   # a hard jump = a large frame-to-frame delta
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_morph_window_and_extract_and_concat(tmp_path):
+    clip = tmp_path / "c.mp4"
+    _make_jump_clip(clip, 40, 52)
+    tool = MorphCut()
+    p1 = tool._extract_segment(str(clip), 0.0, 0.5, 30, "libx264", 18, tmp_path / "p1.mp4")
+    mw = tool._morph_window(str(clip), 0.5, 0.7, 60, 30, "libx264", 18, tmp_path / "m.mp4")
+    p3 = tool._extract_segment(str(clip), 0.7, 1.2, 30, "libx264", 18, tmp_path / "p3.mp4")
+    assert p1 and mw and p3
+    out = tool._concat([p1, mw, p3], tmp_path / "out.mp4")
+    assert out and Path(out).exists() and Path(out).stat().st_size > 0
+    assert abs(tool._duration(out) - 1.2) < 0.15       # duration preserved
+
+
+def test_extract_segment_missing_file_returns_none(tmp_path):
+    assert MorphCut()._extract_segment("/no/such.mp4", 0.0, 1.0, 30, "libx264", 18,
+                                       tmp_path / "x.mp4") is None

@@ -10,7 +10,14 @@ jump cuts; morph_cut smooths them.
 
 from __future__ import annotations
 
+import json
+import subprocess
+import tempfile
+from pathlib import Path
 from typing import Any
+
+import numpy as np
+from PIL import Image
 
 from tools.base_tool import (
     BaseTool,
@@ -98,3 +105,90 @@ class MorphCut(BaseTool):
             segments.append({"kind": "pass", "start": round(cursor, 6),
                              "end": round(duration, 6), "cut": None})
         return segments, skipped
+
+    def _run(self, cmd: list[str], timeout: int = 300):
+        return subprocess.run(cmd, capture_output=True, check=True, timeout=timeout)
+
+    def _duration(self, path: str) -> float:
+        try:
+            proc = subprocess.run(
+                ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                 "-of", "json", str(path)], capture_output=True, text=True, check=True, timeout=30)
+            return float(json.loads(proc.stdout)["format"]["duration"])
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, ValueError, KeyError):
+            return 0.0
+
+    def _probe_fps(self, path: str) -> float:
+        try:
+            proc = subprocess.run(
+                ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
+                 "-show_entries", "stream=r_frame_rate", "-of", "default=nk=1:nw=1", str(path)],
+                capture_output=True, text=True, check=True, timeout=30)
+            num, den = proc.stdout.strip().split("/")
+            fps = float(num) / float(den)
+            return fps if fps > 0 else 30.0
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, ValueError, ZeroDivisionError):
+            return 30.0
+
+    def _has_audio(self, path: str) -> bool:
+        try:
+            proc = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "a",
+                 "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
+                capture_output=True, text=True, check=False, timeout=30)
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+        return bool(proc.stdout.strip())
+
+    def _extract_segment(self, input_path, start, end, out_fps, codec, crf, dest) -> str | None:
+        dest = Path(dest)
+        try:
+            self._run(["ffmpeg", "-y", "-v", "error", "-ss", f"{float(start):.3f}",
+                       "-to", f"{float(end):.3f}", "-i", str(input_path), "-r", str(out_fps),
+                       "-c:v", codec, "-crf", str(crf), "-an", str(dest)])
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            return None
+        return str(dest) if dest.is_file() and dest.stat().st_size > 0 else None
+
+    def _morph_window(self, input_path, start, end, morph_fps, out_fps, codec, crf, dest) -> str | None:
+        dest = Path(dest)
+        vf = (f"minterpolate=fps={morph_fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,"
+              f"fps={out_fps}")
+        try:
+            self._run(["ffmpeg", "-y", "-v", "error", "-ss", f"{float(start):.3f}",
+                       "-to", f"{float(end):.3f}", "-i", str(input_path), "-vf", vf,
+                       "-r", str(out_fps), "-c:v", codec, "-crf", str(crf), "-an", str(dest)])
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            return None
+        return str(dest) if dest.is_file() and dest.stat().st_size > 0 else None
+
+    def _concat(self, parts, dest) -> str | None:
+        dest = Path(dest)
+        list_path = dest.parent / f"{dest.stem}_concat.txt"
+        list_path.write_text("".join(f"file '{Path(p).resolve()}'\n" for p in parts))
+        try:
+            self._run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
+                       "-i", str(list_path), "-c", "copy", str(dest)])
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            return None
+        return str(dest) if dest.is_file() and dest.stat().st_size > 0 else None
+
+    def _junction_max_mad(self, video_path, at_seconds, radius) -> float:
+        workdir = Path(tempfile.mkdtemp(prefix="mad_"))
+        try:
+            start = max(0.0, float(at_seconds) - float(radius))
+            dur = float(radius) * 2.0
+            try:
+                self._run(["ffmpeg", "-y", "-v", "quiet", "-ss", f"{start:.3f}",
+                           "-i", str(video_path), "-t", f"{dur:.3f}",
+                           str(workdir / "f_%04d.png")])
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+                return 0.0
+            frames = sorted(workdir.glob("f_*.png"))
+            if len(frames) < 2:
+                return 0.0
+            arrs = [np.asarray(Image.open(f).convert("RGB")).astype(np.float64) for f in frames]
+            return float(max(np.abs(arrs[i + 1] - arrs[i]).mean() for i in range(len(arrs) - 1)))
+        finally:
+            import shutil
+            shutil.rmtree(workdir, ignore_errors=True)
