@@ -142,14 +142,16 @@ def test_extract_segment_missing_file_returns_none(tmp_path):
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
 def test_concat_handles_path_with_apostrophe(tmp_path):
-    # A path containing a single quote must not break the concat list format.
+    # A segment path containing a single quote must not break the concat list format.
+    # Build the clip in a clean dir, but write the SEGMENTS into an apostrophe dir so the
+    # concat list entries contain the quote (isolates _concat's escaping).
+    clip = tmp_path / "c.mp4"
+    _make_jump_clip(clip, 40, 52)
     workdir = tmp_path / "o'brien"
     workdir.mkdir()
-    clip = workdir / "c.mp4"
-    _make_jump_clip(clip, 40, 52)
     tool = MorphCut()
     p1 = tool._extract_segment(str(clip), 0.0, 0.5, 30, "libx264", 18, workdir / "p1.mp4")
     p2 = tool._extract_segment(str(clip), 0.5, 1.0, 30, "libx264", 18, workdir / "p2.mp4")
-    assert p1 and p2
+    assert p1 and p2 and "o'brien" in p1
     out = tool._concat([p1, p2], workdir / "out.mp4")
     assert out and Path(out).exists() and Path(out).stat().st_size > 0
