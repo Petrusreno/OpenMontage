@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess as _sp
 from pathlib import Path
@@ -107,3 +108,66 @@ def test_has_audio_false_on_silent_video(tmp_path):
 
 def test_extract_missing_file_returns_none():
     assert BeatSync()._extract_samples("/no/such.wav", 22050) is None
+
+
+def test_execute_requires_input():
+    assert not BeatSync().execute({}).success
+
+
+def test_execute_rejects_non_numeric_sensitivity(tmp_path):
+    r = BeatSync().execute({"input_path": str(tmp_path / "a.wav"), "sensitivity": "x"})
+    assert not r.success
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_recovers_known_bpm(tmp_path):
+    clip = tmp_path / "c.wav"; _make_click_wav(clip, bpm=120)
+    out = tmp_path / "beats.json"
+    result = BeatSync().execute({"input_path": str(clip), "output_path": str(out)})
+    assert result.success, result.error
+    assert out.exists()
+    assert abs(result.data["bpm"] - 120) < 6            # median-IBI estimate (120.2 observed)
+    assert result.data["beat_count"] >= 10
+    report = json.loads(out.read_text())
+    assert report["bpm"] == result.data["bpm"]
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_snaps_cuts_to_beats(tmp_path):
+    clip = tmp_path / "c.wav"; _make_click_wav(clip, bpm=120)
+    result = BeatSync().execute({
+        "input_path": str(clip), "cut_seconds": [0.42, 2.55],
+        "output_path": str(tmp_path / "b.json")})
+    assert result.success, result.error
+    snapped = result.data["snapped_cuts"]
+    assert len(snapped) == 2
+    for s in snapped:
+        assert abs(s["offset"]) <= 0.3                   # within ~half a 0.5s beat period
+        assert s["snapped"] in result.data["beats"]      # lands on a detected beat
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_video_input(tmp_path):
+    vid = tmp_path / "v.mp4"; _make_click_video(vid, bpm=120)
+    result = BeatSync().execute({"input_path": str(vid), "output_path": str(tmp_path / "b.json")})
+    assert result.success, result.error
+    assert result.data["beat_count"] >= 10
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_fails_on_silent_short(tmp_path):
+    clip = tmp_path / "s.wav"
+    _sp.run(["ffmpeg", "-y", "-v", "quiet", "-f", "lavfi",
+             "-i", "anullsrc=r=22050:cl=mono", "-t", "0.2", str(clip)],
+            check=True, capture_output=True)
+    r = BeatSync().execute({"input_path": str(clip), "output_path": str(tmp_path / "b.json")})
+    assert not r.success                                 # < 2 beats -> no fabricated BPM
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_is_deterministic(tmp_path):
+    clip = tmp_path / "c.wav"; _make_click_wav(clip, bpm=120)
+    o1 = tmp_path / "o1.json"; o2 = tmp_path / "o2.json"
+    BeatSync().execute({"input_path": str(clip), "output_path": str(o1)})
+    BeatSync().execute({"input_path": str(clip), "output_path": str(o2)})
+    assert o1.read_text() == o2.read_text()
