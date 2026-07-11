@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import shutil
+import subprocess as _sp
+from pathlib import Path
+
 import numpy as np
+import pytest
 
 from tools.audio.beat_sync import BeatSync
 from tools.base_tool import ToolTier
@@ -62,3 +67,43 @@ def test_snap_to_nearest_beat():
     assert [s["snapped"] for s in snapped] == [0.5, 1.0, 2.0]
     assert abs(snapped[0]["offset"] - (0.5 - 0.42)) < 1e-9
     assert tool._snap([], beats) == [] and tool._snap([1.0], []) == []
+
+
+def _make_click_wav(path: Path, bpm: int = 120, dur: float = 6.0, sr: int = 22050) -> None:
+    period = 60.0 / bpm
+    x = _impulse_signal(sr, dur, period)
+    x = x / (np.max(np.abs(x)) + 1e-9) * 0.9
+    raw = (x * 32767).astype("<i2").tobytes()
+    _sp.run(["ffmpeg", "-y", "-v", "quiet", "-f", "s16le", "-ar", str(sr), "-ac", "1",
+             "-i", "pipe:0", str(path)], input=raw, check=True, capture_output=True)
+
+
+def _make_click_video(path: Path, bpm: int = 120, sr: int = 22050) -> None:
+    d = path.parent
+    aud = d / "click.wav"; _make_click_wav(aud, bpm=bpm, sr=sr)
+    _sp.run(["ffmpeg", "-y", "-v", "quiet", "-f", "lavfi", "-i", "color=c=gray:s=128x96:d=6:r=15",
+             "-i", str(aud), "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+             "-c:a", "aac", str(path)], check=True, capture_output=True)
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_has_audio_and_extract(tmp_path):
+    clip = tmp_path / "c.wav"; _make_click_wav(clip)
+    tool = BeatSync()
+    assert tool._has_audio(str(clip)) is True
+    samples = tool._extract_samples(str(clip), 22050)
+    assert samples is not None and samples.dtype == np.float32
+    assert samples.size > 22050 * 5                  # ~6 s at 22050
+    assert float(np.max(np.abs(samples))) <= 1.0
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_has_audio_false_on_silent_video(tmp_path):
+    silent = tmp_path / "s.mp4"
+    _sp.run(["ffmpeg", "-y", "-v", "quiet", "-f", "lavfi", "-i", "color=c=gray:s=64x64:d=1:r=10",
+             "-an", "-pix_fmt", "yuv420p", str(silent)], check=True, capture_output=True)
+    assert BeatSync()._has_audio(str(silent)) is False
+
+
+def test_extract_missing_file_returns_none():
+    assert BeatSync()._extract_samples("/no/such.wav", 22050) is None

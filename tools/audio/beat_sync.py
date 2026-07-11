@@ -7,6 +7,7 @@ points to the nearest beat. No librosa/scipy. Output: a beat-grid report + snapp
 
 from __future__ import annotations
 
+import subprocess
 from typing import Any
 
 import numpy as np
@@ -52,6 +53,32 @@ class BeatSync(BaseTool):
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         return ToolResult(success=False, error="not implemented")
+
+    def _has_audio(self, path: str) -> bool:
+        try:
+            proc = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "a",
+                 "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
+                capture_output=True, text=True, check=False, timeout=30)
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+        return bool(proc.stdout.strip())
+
+    def _extract_samples(self, path: str, sample_rate: int) -> "np.ndarray | None":
+        if not self._has_audio(path):
+            return None
+        try:
+            proc = subprocess.run(
+                ["ffmpeg", "-v", "quiet", "-i", str(path),
+                 "-f", "s16le", "-ac", "1", "-ar", str(sample_rate), "pipe:1"],
+                capture_output=True, check=True, timeout=300)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            return None
+        raw = proc.stdout
+        raw = raw[: len(raw) - (len(raw) % 2)]
+        if not raw:
+            return None
+        return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
 
     def _onset_envelope(self, x: "np.ndarray", sample_rate: int, win: int = 1024,
                         hop: int = 512) -> "tuple[np.ndarray, float]":
