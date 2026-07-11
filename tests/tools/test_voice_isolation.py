@@ -141,3 +141,75 @@ def test_process_missing_file_returns_none(tmp_path):
     tool = VoiceIsolation()
     af = tool._build_filter("spectral", None, nf=-25, mix=1.0)
     assert tool._process("/no/such.wav", af, "aac", "192k", tmp_path / "x.aac") is None
+
+
+def test_execute_requires_input():
+    assert not VoiceIsolation().execute({}).success
+
+
+def test_execute_rejects_out_of_range_mix(tmp_path):
+    r = VoiceIsolation().execute({"input_path": str(tmp_path / "a.wav"), "mix": 2.0})
+    assert not r.success and "mix" in (r.error or "")
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_rnnoise_reduces_noise_floor(tmp_path):
+    clip = tmp_path / "c.wav"; _make_noisy_clip(clip)
+    out = tmp_path / "clean.wav"
+    result = VoiceIsolation().execute({
+        "input_path": str(clip), "output_path": str(out), "engine": "rnnoise",
+        "codec": "pcm_s16le"})
+    assert result.success, result.error
+    assert out.exists() and out.stat().st_size > 0
+    assert result.data["engine"] == "rnnoise"
+    assert result.data["noise_floor_after_db"] < result.data["noise_floor_before_db"]
+    assert result.data["noise_reduction_db"] > 3.0          # RNNoise cut the floor clearly
+    assert result.data["had_video"] is False
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_auto_uses_rnnoise_when_model_present(tmp_path):
+    clip = tmp_path / "c.wav"; _make_noisy_clip(clip)
+    result = VoiceIsolation().execute({"input_path": str(clip), "engine": "auto",
+                                       "output_path": str(tmp_path / "o.wav"), "codec": "pcm_s16le"})
+    assert result.success and result.data["engine"] == "rnnoise"     # bundled model resolves
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_spectral_runs_and_reports_engine(tmp_path):
+    clip = tmp_path / "c.wav"; _make_noisy_clip(clip)
+    out = tmp_path / "o.wav"
+    result = VoiceIsolation().execute({"input_path": str(clip), "engine": "spectral",
+                                       "output_path": str(out), "codec": "pcm_s16le"})
+    # spectral doesn't strongly cut a synthetic white-noise floor (loudnorm renormalizes) — assert
+    # it RAN and produced valid output + honest engine label, not a noise-reduction magnitude.
+    assert result.success, result.error
+    assert out.exists() and out.stat().st_size > 0
+    assert result.data["engine"] == "spectral" and result.data["model"] is None
+
+
+def test_execute_forced_rnnoise_without_model_fails(tmp_path):
+    r = VoiceIsolation().execute({"input_path": str(tmp_path / "a.wav"), "engine": "rnnoise",
+                                  "model_path": "/no/such.rnnn"})
+    assert not r.success and "model" in (r.error or "").lower()
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_video_input_muxes_audio_back(tmp_path):
+    vid = tmp_path / "v.mp4"; _make_noisy_clip(vid, with_video=True)
+    out = tmp_path / "clean.mp4"
+    result = VoiceIsolation().execute({"input_path": str(vid), "output_path": str(out),
+                                       "engine": "rnnoise"})
+    assert result.success, result.error
+    tool = VoiceIsolation()
+    assert tool._has_video(str(out)) is True and tool._has_audio(str(out)) is True
+    assert result.data["had_video"] is True
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_execute_no_audio_input_fails(tmp_path):
+    silent = tmp_path / "s.mp4"
+    _sp.run(["ffmpeg", "-y", "-v", "quiet", "-f", "lavfi", "-i", "color=c=gray:s=64x64:d=1:r=10",
+             "-an", "-pix_fmt", "yuv420p", str(silent)], check=True, capture_output=True)
+    r = VoiceIsolation().execute({"input_path": str(silent), "output_path": str(tmp_path / "o.mp4")})
+    assert not r.success

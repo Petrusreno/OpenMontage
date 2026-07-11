@@ -9,8 +9,10 @@ blends the isolated voice with the original. For a video input, the cleaned audi
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -166,4 +168,86 @@ class VoiceIsolation(BaseTool):
         return round(min(mins), 2) if mins else 0.0
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
-        return ToolResult(success=False, error="not implemented")
+        start = time.time()
+        input_path = inputs.get("input_path")
+        if not input_path:
+            return ToolResult(success=False, error="input_path is required.")
+        try:
+            mix = float(inputs.get("mix", 1.0))
+            nf = float(inputs.get("noise_floor_db", -25))
+        except (TypeError, ValueError):
+            return ToolResult(success=False, error="mix/noise_floor_db must be numeric.")
+        if not 0.0 <= mix <= 1.0:
+            return ToolResult(success=False, error="mix must be between 0.0 and 1.0.")
+        engine_req = str(inputs.get("engine", "auto"))
+        codec = str(inputs.get("codec", "aac"))
+        bitrate = str(inputs.get("bitrate", "192k"))
+
+        # Validate engine/model config before touching the filesystem so a forced-rnnoise
+        # request with no resolvable model fails honestly ("model") rather than being masked
+        # by a downstream missing-input error.
+        model = self._resolve_model(inputs.get("model_path"))
+        if engine_req == "rnnoise":
+            if model is None or not self._arnndn_available():
+                return ToolResult(success=False,
+                                  error="engine='rnnoise' needs a resolvable .rnnn model and ffmpeg "
+                                        "arnndn support; supply model_path or use engine='auto'.")
+            engine = "rnnoise"
+        elif engine_req == "spectral":
+            engine, model = "spectral", None
+        else:  # auto
+            if model is not None and self._arnndn_available():
+                engine = "rnnoise"
+            else:
+                engine, model = "spectral", None
+
+        input_path = Path(input_path)
+        if not input_path.is_file():
+            return ToolResult(success=False, error=f"Input not found: {input_path}")
+        if not self._has_audio(str(input_path)):
+            return ToolResult(success=False, error="Input has no audio stream to isolate.")
+
+        had_video = self._has_video(str(input_path))
+        out_path = Path(inputs.get("output_path") or
+                        input_path.with_name(f"{input_path.stem}_voice.{'mp4' if had_video else 'wav'}"))
+
+        af = self._build_filter(engine, model, nf, mix)
+        workdir = Path(tempfile.mkdtemp(prefix="voiceiso_"))
+        try:
+            floor_before = self._noise_floor_dbfs(str(input_path))
+
+            audio_out = self._process(str(input_path), af, codec, bitrate, workdir / "clean.wav"
+                                      if not had_video else workdir / "clean.m4a")
+            if audio_out is None:
+                return ToolResult(success=False, error="Voice-isolation filter chain failed.")
+
+            if had_video:
+                final = self._mux_audio(str(input_path), audio_out, codec, bitrate, out_path)
+                if final is None:
+                    return ToolResult(success=False, error="Audio mux back into video failed.")
+            else:
+                try:
+                    shutil.copyfile(audio_out, out_path)
+                except OSError as exc:
+                    return ToolResult(success=False, error=f"Failed to write output: {exc}")
+            if not out_path.is_file() or out_path.stat().st_size == 0:
+                return ToolResult(success=False, error="Output not created or empty.")
+
+            floor_after = self._noise_floor_dbfs(str(out_path))
+            reduction = max(0.0, floor_before - floor_after)
+            return ToolResult(
+                success=True,
+                artifacts=[str(out_path)],
+                duration_seconds=time.time() - start,
+                data={
+                    "engine": engine,
+                    "model": model,
+                    "mix": mix,
+                    "noise_floor_before_db": round(floor_before, 2),
+                    "noise_floor_after_db": round(floor_after, 2),
+                    "noise_reduction_db": round(reduction, 2),
+                    "had_video": had_video,
+                },
+            )
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
