@@ -256,7 +256,7 @@ class GreenScreenComposite(BaseTool):
 
     def _ffmpeg_color(self, bg_color_hex: str) -> str:
         """Map a #RRGGBB (or RRGGBB) hex string to ffmpeg's 0xRRGGBB form."""
-        h = bg_color_hex.lstrip("#")
+        h = bg_color_hex[1:] if bg_color_hex.startswith("#") else bg_color_hex
         if len(h) != 6 or any(c not in "0123456789abcdefABCDEF" for c in h):
             raise ValueError(f"bg_color_hex must be 6 hex digits, got {bg_color_hex!r}")
         return f"0x{h.upper()}"

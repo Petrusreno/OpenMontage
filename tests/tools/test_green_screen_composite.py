@@ -18,20 +18,30 @@ def test_layout_filtergraph_full_behind():
 
 def test_layout_filtergraph_news_anchor_shift_and_scale():
     g = GreenScreenComposite()._layout_filtergraph("news_anchor", 1920, 1080, 0.65, 300, "0x0E172A", 0.10, 0.08)
-    assert "crop=1920:780:0:300,pad=1920:1080:0:0:black[bg]" in g
-    assert "scale=iw*0.65:ih*0.65,colorkey=0x0E172A:0.1:0.08[fg]" in g
-    assert g.endswith("[bg][fg]overlay=(W-w)/2:H-h[v]")
+    assert g == (
+        "[1:v]scale=1920:1080,crop=1920:780:0:300,pad=1920:1080:0:0:black[bg];"
+        "[0:v]scale=iw*0.65:ih*0.65,colorkey=0x0E172A:0.1:0.08[fg];"
+        "[bg][fg]overlay=(W-w)/2:H-h[v]"
+    )
 
 
 def test_layout_filtergraph_pip_and_split():
     t = GreenScreenComposite()
     p = t._layout_filtergraph("pip", 1920, 1080, 0.65, 300, "0x0E172A", 0.10, 0.08)
-    assert "scale=1920*0.30:1080*0.30,colorkey=0x0E172A:0.1:0.08[fg]" in p
-    assert p.endswith("[bg][fg]overlay=W-w-20:H-h-20[v]")
+    assert p == (
+        "[1:v]scale=1920:1080[bg];[0:v]scale=1920*0.30:1080*0.30,colorkey=0x0E172A:0.1:0.08[fg];"
+        "[bg][fg]overlay=W-w-20:H-h-20[v]"
+    )
     s = t._layout_filtergraph("split", 1920, 1080, 0.65, 300, "0x0E172A", 0.10, 0.08)
-    assert "color=c=black:s=1920x1080[base]" in s
-    assert "[0:v]scale=960:1080,colorkey=0x0E172A:0.1:0.08[l]" in s
-    assert s.endswith("[base][l]overlay=0:0[t];[t][r]overlay=960:0[v]")
+    assert s == (
+        "color=c=black:s=1920x1080[base];[0:v]scale=960:1080,colorkey=0x0E172A:0.1:0.08[l];"
+        "[1:v]scale=960:1080[r];[base][l]overlay=0:0[t];[t][r]overlay=960:0[v]"
+    )
+
+
+def test_ffmpeg_color_rejects_double_hash():
+    with pytest.raises(ValueError):
+        GreenScreenComposite()._ffmpeg_color("##0E172A")
 
 
 def test_layout_filtergraph_unknown_raises():
