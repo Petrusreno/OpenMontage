@@ -311,7 +311,67 @@ class GreenScreenComposite(BaseTool):
         key_similarity: float,
         key_blend: float,
     ) -> ToolResult:
-        return ToolResult(success=False, error="ffmpeg engine not implemented")
+        start = time.time()
+        try:
+            ff_color = self._ffmpeg_color(bg_color_hex)
+        except ValueError as e:
+            return ToolResult(success=False, error=str(e))
+
+        speaker_info = self._probe_video(speaker_path)
+        bg_info = self._probe_video(background_path)
+        if not speaker_info or not bg_info:
+            return ToolResult(success=False, error="Failed to probe one or both input videos")
+
+        target_fps = min(speaker_info["fps"], bg_info["fps"])
+        if target_fps <= 0:
+            target_fps = 15.0
+        out_w, out_h = bg_info["width"], bg_info["height"]
+        duration = min(speaker_info["duration"], bg_info["duration"])
+
+        # Clamp so news_anchor's crop height (out_h - bg_shift_up) stays a
+        # positive, even number (libx264/yuv420p requires even dimensions);
+        # no-op for the common case where bg_shift_up is well under out_h
+        # (e.g. 300 on a 1080-tall bg).
+        safe_bg_shift_up = min(bg_shift_up, max(out_h - 2, 0))
+        if safe_bg_shift_up > 0 and (out_h - safe_bg_shift_up) % 2 != 0:
+            safe_bg_shift_up -= 1
+        try:
+            fg = self._layout_filtergraph(
+                layout, out_w, out_h, speaker_scale, safe_bg_shift_up,
+                ff_color, key_similarity, key_blend)
+        except ValueError as e:
+            return ToolResult(success=False, error=str(e))
+
+        cmd = ["ffmpeg", "-y", "-i", str(speaker_path), "-i", str(background_path)]
+        if original_audio_path:
+            cmd += ["-i", str(original_audio_path)]
+            audio_map = ["-map", "2:a:0"]
+            has_audio = True
+        else:
+            audio_map = ["-map", "0:a?"]
+            has_audio = bool(speaker_info.get("has_audio"))
+        cmd += ["-filter_complex", fg, "-map", "[v]", *audio_map,
+                "-t", f"{duration:.3f}", "-r", str(target_fps),
+                "-c:v", "libx264", "-crf", "18", "-preset", "fast", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "192k", str(output_path)]
+        try:
+            self.run_command(cmd, timeout=1200)
+        except Exception as e:
+            return ToolResult(success=False, error=f"FFmpeg fast-path failed: {e}")
+        if not output_path.exists() or output_path.stat().st_size == 0:
+            return ToolResult(success=False, error="Output video was not created")
+
+        return ToolResult(
+            success=True,
+            data={
+                "output": str(output_path), "layout": layout, "fps": target_fps,
+                "frame_count": round(duration * target_fps), "duration": round(duration, 2),
+                "dimensions": f"{out_w}x{out_h}", "speaker_scale": speaker_scale,
+                "engine": "ffmpeg", "has_audio": has_audio,
+            },
+            artifacts=[str(output_path)],
+            duration_seconds=round(time.time() - start, 2),
+        )
 
     def _parse_hex_color(self, hex_str: str) -> np.ndarray:
         """Parse a hex color string like '#0E172A' to an RGB numpy array."""
@@ -397,12 +457,14 @@ class GreenScreenComposite(BaseTool):
             fps = 30.0
 
         duration = float(data.get("format", {}).get("duration", 0))
+        has_audio = any(s.get("codec_type") == "audio" for s in data.get("streams", []))
 
         return {
             "fps": fps,
             "duration": duration,
             "width": int(video_stream.get("width", 1920)),
             "height": int(video_stream.get("height", 1080)),
+            "has_audio": has_audio,
         }
 
     def _extract_frames(self, video_path: Path, output_dir: Path, fps: float) -> None:
