@@ -202,6 +202,10 @@ class TextBasedEditor(BaseTool):
         kept_seconds = round(sum(c["out_seconds"] - c["in_seconds"] for c in cuts), 3)
         return {
             "version": "1.0",
+            # Filler/repetition excision is realized by ffmpeg cut+concat (no Remotion/
+            # HyperFrames), so the edit_decisions artifact carries the ffmpeg runtime
+            # (required by the edit_decisions schema).
+            "render_runtime": "ffmpeg",
             "cuts": cuts,
             "metadata": {
                 "tool": "text_based_editor",
