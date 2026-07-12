@@ -201,6 +201,23 @@ class TTSSelector(BaseTool):
         from lib.scoring import rank_providers
 
         preferred = inputs.get("preferred_provider", "auto")
+
+        # Apply config-level pinning when caller left preferred_provider as "auto"
+        _fallback_enabled = True
+        if preferred == "auto":
+            try:
+                from lib.config_model import OpenMontageConfig
+                _cfg = OpenMontageConfig.load()
+                _pinned = _cfg.tools.preferred_providers.get(self.capability)
+                if _pinned:
+                    preferred = _pinned
+                    _fallback_enabled = _cfg.tools.fallback_enabled
+                    if not _fallback_enabled:
+                        # Hard-pin: only the pinned provider is allowed
+                        candidates = [t for t in candidates if t.provider == preferred]
+            except Exception:
+                pass  # config unavailable — fall through to scoring
+
         allowed = set(inputs.get("allowed_providers") or [])
         if allowed:
             candidates = [tool for tool in candidates if tool.provider in allowed]
@@ -216,6 +233,9 @@ class TTSSelector(BaseTool):
             for score_item in rankings:
                 if score_item.provider == preferred and score_item.provider in tool_by_provider:
                     return tool_by_provider[score_item.provider], score_item
+            # Preferred provider not available — check fallback policy
+            if not _fallback_enabled:
+                return None, f"Pinned provider {preferred!r} unavailable and fallback disabled."
 
         for score_item in rankings:
             if score_item.provider in tool_by_provider:

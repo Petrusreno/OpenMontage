@@ -31,3 +31,10 @@ paths:
   styles_dir: styles
   skills_dir: skills
   output_dir: output
+
+tools:
+  preferred_providers:
+    image_generation: gbs
+    video_generation: auto-browser
+    tts: piper-local
+  fallback_enabled: true

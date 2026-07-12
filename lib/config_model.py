@@ -62,6 +62,13 @@ class PathsConfig(BaseModel):
     output_dir: str = "output"
 
 
+class ToolsConfig(BaseModel):
+    """Provider pinning and fallback configuration for capability selectors."""
+
+    preferred_providers: dict[str, str] = Field(default_factory=dict)
+    fallback_enabled: bool = True
+
+
 class OpenMontageConfig(BaseModel):
     """Top-level runtime configuration."""
 
@@ -70,6 +77,7 @@ class OpenMontageConfig(BaseModel):
     checkpoint: CheckpointConfig = Field(default_factory=CheckpointConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
+    tools: ToolsConfig = Field(default_factory=ToolsConfig)
 
     @classmethod
     def load(cls, config_path: Optional[Path] = None) -> "OpenMontageConfig":

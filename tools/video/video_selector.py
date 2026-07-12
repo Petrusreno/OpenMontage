@@ -285,6 +285,23 @@ class VideoSelector(BaseTool):
         from lib.scoring import rank_providers, ProviderScore
 
         preferred = inputs.get("preferred_provider", "auto")
+
+        # Apply config-level pinning when caller left preferred_provider as "auto"
+        _fallback_enabled = True
+        if preferred == "auto":
+            try:
+                from lib.config_model import OpenMontageConfig
+                _cfg = OpenMontageConfig.load()
+                _pinned = _cfg.tools.preferred_providers.get(self.capability)
+                if _pinned:
+                    preferred = _pinned
+                    _fallback_enabled = _cfg.tools.fallback_enabled
+                    if not _fallback_enabled:
+                        # Hard-pin: only the pinned provider is allowed
+                        candidates = [t for t in candidates if t.provider == preferred]
+            except Exception:
+                pass  # config unavailable — fall through to scoring
+
         allowed = set(inputs.get("allowed_providers") or [])
         if allowed:
             candidates = [tool for tool in candidates if tool.provider in allowed]
@@ -333,6 +350,10 @@ class VideoSelector(BaseTool):
             )
             if preferred_score is not None and preferred_score.weighted_score >= top_score - gap:
                 return _tool_for(preferred_score), preferred_score
+            # Config hard-pin (fallback disabled): the pinned provider was not
+            # selectable within the gap, so fail rather than substitute another.
+            if not _fallback_enabled:
+                return None, f"Pinned provider {preferred!r} unavailable and fallback disabled."
 
         # Return the highest-scored selectable provider
         for score in rankings:
