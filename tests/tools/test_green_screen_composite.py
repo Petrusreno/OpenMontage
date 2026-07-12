@@ -78,9 +78,10 @@ def _has_audio(path):
 
 
 def test_execute_rejects_bad_engine(tmp_path):
-    s = tmp_path / "s.mp4"; b = tmp_path / "b.mp4"
-    s.write_bytes(b"x"); b.write_bytes(b"x")
-    r = GreenScreenComposite().execute({"speaker_path": str(s), "background_path": str(b),
+    # Nonexistent paths: a bad engine must fail on validation BEFORE the
+    # existence checks — else the error would say "not found", not "engine".
+    r = GreenScreenComposite().execute({"speaker_path": "/no/such/s.mp4",
+                                        "background_path": "/no/such/b.mp4",
                                         "output_path": str(tmp_path / "o.mp4"), "engine": "nope"})
     assert not r.success and "engine" in (r.error or "").lower()
 
