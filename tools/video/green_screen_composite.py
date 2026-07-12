@@ -102,6 +102,18 @@ class GreenScreenComposite(BaseTool):
                 "default": "#0E172A",
                 "description": "The keyed speaker's background color for alpha creation",
             },
+            "engine": {
+                "type": "string", "enum": ["ffmpeg", "pil"], "default": "ffmpeg",
+                "description": "ffmpeg = fast single-pass colorkey+overlay (default); pil = legacy per-frame path.",
+            },
+            "key_similarity": {
+                "type": "number", "default": 0.10, "minimum": 0.0, "maximum": 1.0,
+                "description": "colorkey similarity (fast path).",
+            },
+            "key_blend": {
+                "type": "number", "default": 0.08, "minimum": 0.0, "maximum": 1.0,
+                "description": "colorkey edge blend (fast path).",
+            },
         },
     }
 
@@ -113,6 +125,7 @@ class GreenScreenComposite(BaseTool):
     idempotency_key_fields = [
         "speaker_path", "background_path", "layout",
         "speaker_scale", "bg_shift_up", "bg_color_hex",
+        "engine", "key_similarity", "key_blend",
     ]
     side_effects = ["writes composite video to output_path"]
     user_visible_verification = [
@@ -130,6 +143,19 @@ class GreenScreenComposite(BaseTool):
         speaker_scale = inputs.get("speaker_scale", 0.65)
         bg_shift_up = inputs.get("bg_shift_up", 300)
         bg_color_hex = inputs.get("bg_color_hex", "#0E172A")
+        engine = inputs.get("engine", "ffmpeg")
+        key_similarity = inputs.get("key_similarity", 0.10)
+        key_blend = inputs.get("key_blend", 0.08)
+
+        if engine not in ("ffmpeg", "pil"):
+            return ToolResult(success=False, error=f"engine must be 'ffmpeg' or 'pil', got {engine!r}")
+        try:
+            key_similarity = float(key_similarity)
+            key_blend = float(key_blend)
+        except (TypeError, ValueError):
+            return ToolResult(success=False, error="key_similarity/key_blend must be numeric.")
+        if not (0.0 <= key_similarity <= 1.0) or not (0.0 <= key_blend <= 1.0):
+            return ToolResult(success=False, error="key_similarity/key_blend must be in [0, 1].")
 
         if not speaker_path.exists():
             return ToolResult(success=False, error=f"Speaker video not found: {speaker_path}")
@@ -139,6 +165,30 @@ class GreenScreenComposite(BaseTool):
             return ToolResult(success=False, error=f"Audio source not found: {original_audio_path}")
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if engine == "pil":
+            return self._execute_pil(
+                speaker_path, background_path, output_path,
+                original_audio_path=original_audio_path, layout=layout,
+                speaker_scale=speaker_scale, bg_shift_up=bg_shift_up, bg_color_hex=bg_color_hex)
+        return self._execute_ffmpeg(
+            speaker_path, background_path, output_path,
+            original_audio_path=original_audio_path, layout=layout,
+            speaker_scale=speaker_scale, bg_shift_up=bg_shift_up, bg_color_hex=bg_color_hex,
+            key_similarity=key_similarity, key_blend=key_blend)
+
+    def _execute_pil(
+        self,
+        speaker_path: Path,
+        background_path: Path,
+        output_path: Path,
+        *,
+        original_audio_path: str | None,
+        layout: str,
+        speaker_scale: float,
+        bg_shift_up: int,
+        bg_color_hex: str,
+    ) -> ToolResult:
         start = time.time()
 
         # Parse bg color
@@ -236,6 +286,7 @@ class GreenScreenComposite(BaseTool):
                     "dimensions": f"{out_w}x{out_h}",
                     "speaker_scale": speaker_scale,
                     "has_audio": bool(original_audio_path),
+                    "engine": "pil",
                 },
                 artifacts=[str(output_path)],
                 duration_seconds=round(elapsed, 2),
@@ -245,6 +296,22 @@ class GreenScreenComposite(BaseTool):
         finally:
             # Step 7: Clean up temp directories
             self._cleanup_temp(temp_dir)
+
+    def _execute_ffmpeg(
+        self,
+        speaker_path: Path,
+        background_path: Path,
+        output_path: Path,
+        *,
+        original_audio_path: str | None,
+        layout: str,
+        speaker_scale: float,
+        bg_shift_up: int,
+        bg_color_hex: str,
+        key_similarity: float,
+        key_blend: float,
+    ) -> ToolResult:
+        return ToolResult(success=False, error="ffmpeg engine not implemented")
 
     def _parse_hex_color(self, hex_str: str) -> np.ndarray:
         """Parse a hex color string like '#0E172A' to an RGB numpy array."""
