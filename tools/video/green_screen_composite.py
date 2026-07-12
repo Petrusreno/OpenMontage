@@ -328,13 +328,19 @@ class GreenScreenComposite(BaseTool):
         out_w, out_h = bg_info["width"], bg_info["height"]
         duration = min(speaker_info["duration"], bg_info["duration"])
 
-        # Clamp so news_anchor's crop height (out_h - bg_shift_up) stays a
-        # positive, even number (libx264/yuv420p requires even dimensions);
-        # no-op for the common case where bg_shift_up is well under out_h
-        # (e.g. 300 on a 1080-tall bg).
-        safe_bg_shift_up = min(bg_shift_up, max(out_h - 2, 0))
-        if safe_bg_shift_up > 0 and (out_h - safe_bg_shift_up) % 2 != 0:
-            safe_bg_shift_up -= 1
+        # news_anchor crops (out_h - bg_shift_up) px of background. Guard that
+        # height: reject out-of-range loudly (never silently rewrite the caller's
+        # shift), and nudge an odd height even (libx264/yuv420p needs even dims).
+        # No-op for the common case (e.g. 300 on a 1080-tall bg).
+        safe_bg_shift_up = bg_shift_up
+        if layout == "news_anchor":
+            if bg_shift_up >= out_h:
+                return ToolResult(
+                    success=False,
+                    error=f"bg_shift_up ({bg_shift_up}) must be less than "
+                          f"background height ({out_h}).")
+            if (out_h - bg_shift_up) % 2 != 0:
+                safe_bg_shift_up = bg_shift_up - 1
         try:
             fg = self._layout_filtergraph(
                 layout, out_w, out_h, speaker_scale, safe_bg_shift_up,

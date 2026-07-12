@@ -130,11 +130,21 @@ def test_ffmpeg_all_layouts(tmp_path, layout):
     _make_speaker(s, sr_audio=False); _make_bg(b, w=320, h=180)
     out = tmp_path / f"o_{layout}.mp4"
     r = GreenScreenComposite().execute({"speaker_path": str(s), "background_path": str(b),
-        "output_path": str(out), "layout": layout})
+        "output_path": str(out), "layout": layout, "bg_shift_up": 60})  # < 180-tall bg
     assert r.success, r.error
     assert out.exists() and out.stat().st_size > 0
     assert r.data["dimensions"] == "320x180"
     assert r.data["frame_count"] >= 1
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_ffmpeg_news_anchor_rejects_oversize_shift(tmp_path):
+    # bg_shift_up >= background height must fail loudly, not silently clamp.
+    s = tmp_path / "s.mp4"; b = tmp_path / "b.mp4"
+    _make_speaker(s, sr_audio=False); _make_bg(b, w=320, h=180)
+    r = GreenScreenComposite().execute({"speaker_path": str(s), "background_path": str(b),
+        "output_path": str(tmp_path / "o.mp4"), "layout": "news_anchor", "bg_shift_up": 300})
+    assert not r.success and "bg_shift_up" in (r.error or "")
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
