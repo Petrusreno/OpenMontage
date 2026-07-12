@@ -4,8 +4,12 @@ Composites a keyed speaker (dark/solid background) over a Remotion
 background video with layout presets. Supports news anchor, full behind,
 picture-in-picture, and split layouts.
 
-Uses PIL/numpy for frame-level alpha compositing and FFmpeg for
-frame extraction, encoding, and audio muxing.
+Two engines:
+  - ffmpeg (default): a single-pass FFmpeg filtergraph — ``colorkey`` on the
+    solid ``bg_color_hex`` plus ``overlay`` — with no PNG intermediates. Fast
+    (~6x+ over the PIL path) and preserves the speaker's audio by default.
+  - pil (``engine="pil"``): the legacy per-frame path — extract every frame to
+    PNG, alpha-composite in PIL/numpy, re-encode. Kept for exact-behavior parity.
 """
 
 from __future__ import annotations
