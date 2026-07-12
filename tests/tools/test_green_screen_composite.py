@@ -120,7 +120,17 @@ def test_ffmpeg_keying_reveals_background(tmp_path):
         "output_path": str(out), "layout": "full_behind"})
     assert r.success, r.error
     assert r.data["engine"] == "ffmpeg"
-    assert _sample_top_navy_pct(out, tmp_path) < 5.0
+    keyed_navy = _sample_top_navy_pct(out, tmp_path)
+    # No-key baseline of the SAME inputs: the speaker's navy bg opaquely covers
+    # the background, so the strip stays navy. Proves the <5% is real keying,
+    # not a vacuous threshold.
+    nokey = tmp_path / "nokey.mp4"
+    sp.run(["ffmpeg", "-y", "-v", "error", "-i", str(s), "-i", str(b),
+            "-filter_complex", "[1:v]scale=320:180[bg];[0:v]scale=320:180[fg];[bg][fg]overlay=0:0[v]",
+            "-map", "[v]", "-t", "2", "-r", "15", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            str(nokey)], check=True, capture_output=True)
+    nokey_navy = _sample_top_navy_pct(nokey, tmp_path)
+    assert keyed_navy < 5.0 < 90.0 < nokey_navy, (keyed_navy, nokey_navy)
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
@@ -209,3 +219,6 @@ def test_execute_rejects_bad_key_params(tmp_path):
     base = {"speaker_path": str(s), "background_path": str(b), "output_path": str(tmp_path / "o.mp4")}
     assert not GreenScreenComposite().execute({**base, "key_similarity": "x"}).success
     assert not GreenScreenComposite().execute({**base, "key_blend": 1.5}).success
+    # non-numeric geometry must fail cleanly (not a traceback) on both engines
+    assert not GreenScreenComposite().execute({**base, "bg_shift_up": "abc"}).success
+    assert not GreenScreenComposite().execute({**base, "speaker_scale": "big"}).success

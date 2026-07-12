@@ -156,8 +156,12 @@ class GreenScreenComposite(BaseTool):
         try:
             key_similarity = float(key_similarity)
             key_blend = float(key_blend)
+            speaker_scale = float(speaker_scale)
+            bg_shift_up = int(bg_shift_up)
         except (TypeError, ValueError):
-            return ToolResult(success=False, error="key_similarity/key_blend must be numeric.")
+            return ToolResult(
+                success=False,
+                error="key_similarity/key_blend/speaker_scale/bg_shift_up must be numeric.")
         if not (0.0 <= key_similarity <= 1.0) or not (0.0 <= key_blend <= 1.0):
             return ToolResult(success=False, error="key_similarity/key_blend must be in [0, 1].")
 
