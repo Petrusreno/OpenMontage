@@ -35,7 +35,8 @@ Before watching the content, analyze the raw footage to understand the physical 
 3. **Green screen detected?**
    - If yes, note that `green_screen_processor` tool will be needed in the compose stage.
    - Record the detected screen color (green or blue) and estimated uniformity.
-   - The compose-director will use this to run chroma key removal and composite onto an animated background.
+   - The compose-director will use this to run chroma key removal and composite onto a background.
+   - **Choose the background type in the scene plan:** a Remotion *animated background* (abstract/graphic) or a *generated react background* (dynamic footage/AI clip behind the speaker — the reaction/commentary treatment). For a react background, note it so compose-director generates it via `video_selector` (e.g. `gemini_omni_video`, which adds native audio + reference-consistent, conversationally-editable shots).
 
 4. **Measure speaker safe zone:**
    - From the speaker's bounding box, determine where graphics can be placed WITHOUT overlapping the speaker.

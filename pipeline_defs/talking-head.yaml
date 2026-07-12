@@ -185,6 +185,9 @@ stages:
       - showcase_card    # letterboxed showcase cards with typography
       - video_stitch     # multi-clip assembly with transitions
       - visual_qa        # frame extraction + quality validation
+      - green_screen_processor  # chroma-key removal for green/blue screen footage
+      - green_screen_composite  # layer keyed speaker over a background (react treatment)
+      - video_selector          # generate a react background (routes to gemini_omni_video, etc.)
     tools_available:
       - video_compose
       - audio_mixer
@@ -200,6 +203,9 @@ stages:
       - showcase_card
       - video_stitch
       - visual_qa
+      - green_screen_processor
+      - green_screen_composite
+      - video_selector
     checkpoint_required: true
     human_approval_default: false
     review_focus:

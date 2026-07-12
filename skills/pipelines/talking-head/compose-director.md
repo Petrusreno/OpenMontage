@@ -286,24 +286,37 @@ If the footage has a green/blue screen (detected in scene-director Step 0), foll
    ```
    The `auto` method detects whether the background is green or blue and applies the appropriate chroma key.
 
-2. **Render Remotion animated background** using the Explainer composition:
+2. **Produce the background.** Pick the source that fits the brief:
+
+   **(a) Remotion animated background** — abstract/graphic backdrop (gradient mesh, floating orbs, subtle grid). Best for corporate/explainer tone.
    ```
-   # Render an AnimatedBackground clip (gradient mesh, floating orbs, subtle grid)
    # Use the Explainer composition — NOT a flat #0F172A solid color
    npx remotion render src/index.ts Explainer --props='{"duration":VIDEO_DURATION}' --output=<project>/assets/video/animated_bg.mp4
    ```
-   The AnimatedBackground provides a professional gradient mesh with floating orbs and a subtle grid pattern. This is far superior to a flat solid color.
 
-3. **Run `green_screen_composite` tool** to layer the speaker onto the animated background:
+   **(b) Generated "react" background (dynamic content behind the speaker)** — for the reaction/commentary treatment (real footage or an AI clip playing behind the keyed speaker). Route through `video_selector`; when available, `gemini_omni_video` is the strongest fit because it renders **native audio**, honors **9:16 / 16:9** directly, keeps subjects consistent via **reference-image tags** (`<FIRST_FRAME>`, `<IMAGE_REF_N>`), and supports **conversational editing** — iterate a shot by passing `previous_interaction_id` + a delta prompt instead of regenerating.
    ```
-   green_screen_composite.execute({
-       "foreground_path": "<greenscreen_removed_video>",
-       "background_path": "<animated_bg>",
-       "output_path": "<project>/assets/video/composited.mp4",
-       "layout": "news_anchor"
+   video_selector.execute({
+       "operation": "text_to_video",          # or image_to_video / reference_to_video
+       "prompt": "<react background description; add [0-3s]… timecode beats for pacing>",
+       "aspect_ratio": "9:16",                # match target platform
+       "output_path": "<project>/assets/video/react_bg.mp4",
+       "preferred_provider": "gemini_omni"    # omit for auto-routing
    })
    ```
-   Default layout is `news_anchor` (speaker center-bottom, background fills frame). Adjust layout based on speaker position detected in Step 0.
+   Announce the provider/model and cost before generating (paid tier). To refine one shot, re-call with `previous_interaction_id` and only the change ("make the sky sunset orange") — cheaper than a fresh generation.
+
+3. **Run `green_screen_composite` tool** to layer the speaker onto the background:
+   ```
+   green_screen_composite.execute({
+       "speaker_path": "<greenscreen_removed_video>",   # the keyed speaker (NOT "foreground_path")
+       "background_path": "<animated_bg | react_bg>",
+       "output_path": "<project>/assets/video/composited.mp4",
+       "layout": "news_anchor",
+       "engine": "ffmpeg"                                # default: single-pass colorkey+overlay, ~6x faster
+   })
+   ```
+   Default layout is `news_anchor` (speaker center-bottom, background fills frame); use `pip`/`split`/`full_behind` per the speaker position from Step 0. `engine="ffmpeg"` (default) is a single filtergraph pass and preserves the speaker's audio automatically; fall back to `engine="pil"` only if you need the exact legacy per-frame keying. For `news_anchor`, keep `bg_shift_up` below the background height (it rejects oversize shifts).
 
 4. **Burn captions via Remotion TalkingHead composition** (NOT FFmpeg ASS subtitles):
    ```
