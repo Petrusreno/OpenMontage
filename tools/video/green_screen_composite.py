@@ -254,6 +254,49 @@ class GreenScreenComposite(BaseTool):
         b = int(hex_str[4:6], 16)
         return np.array([r, g, b])
 
+    def _ffmpeg_color(self, bg_color_hex: str) -> str:
+        """Map a #RRGGBB (or RRGGBB) hex string to ffmpeg's 0xRRGGBB form."""
+        h = bg_color_hex.lstrip("#")
+        if len(h) != 6 or any(c not in "0123456789abcdefABCDEF" for c in h):
+            raise ValueError(f"bg_color_hex must be 6 hex digits, got {bg_color_hex!r}")
+        return f"0x{h.upper()}"
+
+    def _layout_filtergraph(
+        self,
+        layout: str,
+        out_w: int,
+        out_h: int,
+        speaker_scale: float,
+        bg_shift_up: int,
+        ff_color: str,
+        sim: float,
+        blend: float,
+    ) -> str:
+        """Build the single-pass colorkey+overlay filtergraph for a layout.
+
+        Inputs are [0:v]=speaker (keyed on ff_color) and [1:v]=background.
+        """
+        W, H, hw, S, sc = out_w, out_h, out_w // 2, bg_shift_up, speaker_scale
+        ck = f"colorkey={ff_color}:{sim}:{blend}"
+        if layout == "full_behind":
+            return f"[1:v]scale={W}:{H}[bg];[0:v]scale={W}:{H},{ck}[fg];[bg][fg]overlay=0:0[v]"
+        if layout == "news_anchor":
+            return (
+                f"[1:v]scale={W}:{H},crop={W}:{H - S}:0:{S},pad={W}:{H}:0:0:black[bg];"
+                f"[0:v]scale=iw*{sc}:ih*{sc},{ck}[fg];[bg][fg]overlay=(W-w)/2:H-h[v]"
+            )
+        if layout == "pip":
+            return (
+                f"[1:v]scale={W}:{H}[bg];[0:v]scale={W}*0.30:{H}*0.30,{ck}[fg];"
+                f"[bg][fg]overlay=W-w-20:H-h-20[v]"
+            )
+        if layout == "split":
+            return (
+                f"color=c=black:s={W}x{H}[base];[0:v]scale={hw}:{H},{ck}[l];"
+                f"[1:v]scale={hw}:{H}[r];[base][l]overlay=0:0[t];[t][r]overlay={hw}:0[v]"
+            )
+        raise ValueError(f"Unknown layout: {layout}")
+
     def _probe_video(self, path: Path) -> dict[str, Any] | None:
         """Probe a video for fps, duration, and dimensions."""
         cmd = [
